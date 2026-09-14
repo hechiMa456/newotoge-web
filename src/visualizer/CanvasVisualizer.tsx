@@ -259,6 +259,14 @@ export const CanvasVisualizer: React.FC<Props> = ({
         ctx.stroke();
       }
 
+      // 4. 判定ライン  ← ★ このブロックを丸ごと切り取り（削除）
+      if (!isChromaKeyEnabled) {
+        ctx.fillStyle = 'rgba(126, 202, 220, 0.35)';
+        ctx.fillRect(0, judgeLineY - 2, width, 6);
+      }
+      ctx.fillStyle = isChromaKeyEnabled ? '#101F33' : 'rgba(255, 255, 255, 0.85)';
+      ctx.fillRect(0, judgeLineY, width, 3.0);
+
       // 3. ノーツ描画 (音ゲー風ネオン発光 ＋ インパクト演出)
       const topMs = currentMs - (height - judgeLineY) / speed - 50;
       const bottomMs = currentMs + judgeLineY / speed + 50;
@@ -387,13 +395,7 @@ export const CanvasVisualizer: React.FC<Props> = ({
         }
       }
 
-      // 4. 判定ライン
-      if (!isChromaKeyEnabled) {
-        ctx.fillStyle = 'rgba(126, 202, 220, 0.35)';
-        ctx.fillRect(0, judgeLineY - 2, width, 6);
-      }
-      ctx.fillStyle = isChromaKeyEnabled ? '#101F33' : 'rgba(255, 255, 255, 0.85)';
-      ctx.fillRect(0, judgeLineY, width, 3.0);
+      
       ctx.restore();
       animId = requestAnimationFrame(render);
     };

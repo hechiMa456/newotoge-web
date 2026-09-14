@@ -987,7 +987,7 @@ export function App() {
                     padding: '6px 12px',
                     fontSize: 12,
                     cursor: 'pointer',
-                    color: '#b48dcb',
+                    color: '#b4bac1',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 0
@@ -1811,7 +1811,7 @@ export function App() {
                       title={isOnline ? '物理接続中のため削除できません' : 'プリセットを削除'}
                       style={{
                         padding: '4px 8px',
-                        background: isOnline ? '#2C3446' : '#7a4699',
+                        background: isOnline ? '#2C3446' : '#334660',
                         color: isOnline ? '#6A768F' : '#ffffff',
                         border: 'none',
                         borderRadius: 6,
