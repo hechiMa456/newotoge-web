@@ -323,16 +323,34 @@ export class MidiDeviceManager {
       return;
     }
 
+    // マイコン側のUUID および 標準BLE-MIDI UUID の両方を定義
+    const TARGET_SERVICE_UUID = '03b80e5a-ede8-4b33-a028-51ad156441ec';
+    const STANDARD_MIDI_SERVICE_UUID = '03b80e5a-ede8-4b33-a751-6ce34ec4c700';
+    const MIDI_CHAR_UUID = '7772e5db-3868-4112-a1a9-f2669d106bf3';
+
     try {
+      // ★ 修正: マイコンのService UUID、標準UUID、またはデバイス名から検出できるように設定
       const device = await nav.bluetooth.requestDevice({
-        filters: [{ services: ['03b80e5a-ede8-4b33-a751-6ce34ec4c700'] }]
+        filters: [
+          { services: [TARGET_SERVICE_UUID] },
+          { services: [STANDARD_MIDI_SERVICE_UUID] },
+          { namePrefix: 'PowerChord' }
+        ],
+        optionalServices: [TARGET_SERVICE_UUID, STANDARD_MIDI_SERVICE_UUID]
       });
 
       const server = await device.gatt?.connect();
       if (!server) return;
 
-      const service = await server.getPrimaryService('03b80e5a-ede8-4b33-a751-6ce34ec4c700');
-      const characteristic = await service.getCharacteristic('7772e5db-3868-4112-a1a9-f2669d106bf3');
+      // マイコン側のUUIDを優先してサービスを取得
+      let service: any;
+      try {
+        service = await server.getPrimaryService(TARGET_SERVICE_UUID);
+      } catch {
+        service = await server.getPrimaryService(STANDARD_MIDI_SERVICE_UUID);
+      }
+
+      const characteristic = await service.getCharacteristic(MIDI_CHAR_UUID);
 
       const presets = loadRegisteredPresets();
       const matchedPreset = presets.find(
@@ -341,7 +359,7 @@ export class MidiDeviceManager {
 
       const endpoint: UnifiedMidiEndpoint = {
         id: device.id,
-        name: device.name || 'BLE-MIDI Device',
+        name: device.name || 'PowerChordGT (BLE)',
         transport: 'ble-gatt',
         bleCharacteristic: characteristic,
         identifiedPreset: matchedPreset
@@ -349,8 +367,9 @@ export class MidiDeviceManager {
 
       this.endpoints = [...this.endpoints.filter(e => e.id !== endpoint.id), endpoint];
       this.notify();
-    } catch {
-      /* キャンセル時はスキップ */
+    } catch (err) {
+      // ユーザーによるキャンセル以外の場合にログを出力
+      console.warn('BLE connection aborted or failed:', err);
     }
   }
 
