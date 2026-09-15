@@ -409,25 +409,7 @@ export class PlaybackEngine {
       this.isPrerollBgmStarted = true;
     }
 
-    // 1. Note On 送信（プリロール目標位置に到達している場合のみ）
-    if (curMs >= this.prerollTargetMs) {
-      while (this.nextNoteIdx < this.scheduledNotes.length && this.scheduledNotes[this.nextNoteIdx].adjustedOnTimeMs <= curMs) {
-        const item = this.scheduledNotes[this.nextNoteIdx++];
-        if (item.endpointId && epMap.has(item.endpointId)) {
-          const ep = epMap.get(item.endpointId)!;
-          const status = 0x90 | (item.channel & 0x0f);
-          midiMgr.sendBytes(ep, [status, item.pitch & 0x7f, item.velocity & 0x7f]);
-          this.activeNotes.push({
-            channel: item.channel,
-            endpointId: item.endpointId,
-            pitch: item.pitch,
-            offTimeMs: item.adjustedOffTimeMs
-          });
-        }
-      }
-    }
-
-    // 2. Note Off 送信
+    // ★ 1. Note Off を先に送信（DAW準拠: Note On より先に旧音を切る）
     let i = 0;
     while (i < this.activeNotes.length) {
       if (this.activeNotes[i].offTimeMs <= curMs) {
@@ -440,6 +422,34 @@ export class PlaybackEngine {
         this.activeNotes.splice(i, 1);
       } else {
         i++;
+      }
+    }
+
+    // ★ 2. Note On 送信（プリロール目標位置に到達している場合のみ）
+    if (curMs >= this.prerollTargetMs) {
+      while (this.nextNoteIdx < this.scheduledNotes.length && this.scheduledNotes[this.nextNoteIdx].adjustedOnTimeMs <= curMs) {
+        const item = this.scheduledNotes[this.nextNoteIdx++];
+        if (item.endpointId && epMap.has(item.endpointId)) {
+          const ep = epMap.get(item.endpointId)!;
+
+          // ★ セーフティ: 同一チャンネル・同一ピッチがまだ発音中なら、新音送信前に先行してNoteOffを送る
+          const existingIdx = this.activeNotes.findIndex(
+            an => an.endpointId === item.endpointId && an.channel === item.channel && an.pitch === item.pitch
+          );
+          if (existingIdx !== -1) {
+            midiMgr.sendBytes(ep, [0x80 | (item.channel & 0x0f), item.pitch & 0x7f, 0]);
+            this.activeNotes.splice(existingIdx, 1);
+          }
+
+          const status = 0x90 | (item.channel & 0x0f);
+          midiMgr.sendBytes(ep, [status, item.pitch & 0x7f, item.velocity & 0x7f]);
+          this.activeNotes.push({
+            channel: item.channel,
+            endpointId: item.endpointId,
+            pitch: item.pitch,
+            offTimeMs: item.adjustedOffTimeMs
+          });
+        }
       }
     }
 

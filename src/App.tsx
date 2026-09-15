@@ -9,6 +9,7 @@ import { loadRegisteredPresets, registerMcuPreset, deleteRegisteredPreset, Instr
 import { CanvasVisualizer } from './visualizer/CanvasVisualizer';
 import { CircularColorPicker } from './components/CircularColorPicker';
 import { CalibrationView } from './components/calibration/CalibrationView';
+import { StandaloneTransferManager, TransferProgress } from './engine/serial/StandaloneTransferManager';
 
 // デフォルトのチャンネル色配列 (カスタム未設定時に適用)
 const DEFAULT_CHANNEL_COLORS = [
@@ -23,7 +24,7 @@ export function App() {
   const [selectedSongId, setSelectedSongId] = useState<string | null>(null);
   const [endpoints, setEndpoints] = useState<UnifiedMidiEndpoint[]>([]);
   const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null);
-  // イベントリスナーから常に最新の選択状態を参照するための ref
+  
   const currentSongRef = useRef<{ id: string | null; songs: MidiSongData[] }>({ id: null, songs: [] });
   useEffect(() => {
     currentSongRef.current = { id: selectedSongId, songs };
@@ -77,8 +78,11 @@ export function App() {
   const [storageInfo, setStorageInfo] = useState<{ usage: number; quota: number } | null>(null);
   const storageMenuRef = useRef<HTMLDivElement | null>(null);
 
+  // スタンドアロン転送状態管理
+  const [transferProgress, setTransferProgress] = useState<TransferProgress | null>(null);
+  const [isTransferring, setIsTransferring] = useState(false);
+
   const [testPitch, setTestPitch] = useState(60);
-  // 開いているカラーピッカーのスロットID
   const [activeColorPickerSlotId, setActiveColorPickerSlotId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -91,8 +95,8 @@ export function App() {
         setIsStorageMenuOpen(false);
       }
       if (metroMenuRef.current && !metroMenuRef.current.contains(target)) {
-      setIsMetroMenuOpen(false);
-    }
+        setIsMetroMenuOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
@@ -153,22 +157,7 @@ export function App() {
     return `${minutes}:${formattedSec}`;
   };
 
-  // 詳細設定を展開しているスロットIDの一覧
-  const [expandedSlotIds, setExpandedSlotIds] = useState<Set<string>>(new Set());
-
-  const toggleSlotDetails = (slotId: string) => {
-    setExpandedSlotIds(prev => {
-      const next = new Set(prev);
-      if (next.has(slotId)) {
-        next.delete(slotId);
-      } else {
-        next.add(slotId);
-      }
-      return next;
-    });
-  };
-
-  // --- 1. 起動時ロード & デバイス購読 (初回マウント時のみ実行) ---
+  // 起動時ロード & デバイス購読
   useEffect(() => {
     const midiMgr = MidiDeviceManager.getInstance();
     midiMgr.initWebMidi();
@@ -178,7 +167,6 @@ export function App() {
       setKnownPresets(loadRegisteredPresets());
       setAvailableTargets(midiMgr.getAvailableMcuTargets());
 
-      // マイコン接続時に、現在選択されている楽曲のスロット設定を最新状態で再評価
       const { id, songs: currentSongList } = currentSongRef.current;
       if (id) {
         const active = currentSongList.find(s => s.id === id);
@@ -246,7 +234,7 @@ export function App() {
       unsubMidi();
       unsubAudio();
     };
-  }, []); // ← ここを [selectedSongId] から空配列 [] に変更
+  }, []);
 
   useEffect(() => {
     if (!isPlaying) return;
@@ -260,26 +248,6 @@ export function App() {
   const currentEndpoint = endpoints.find(e => e.id === selectedEndpointId) ?? null;
   const activePreset = presets.find(p => p.id === activePresetId);
 
-  // 楽曲のトラックまたはチャンネルの選択肢一覧を取得
-  const getSourceOptions = (song: MidiSongData) => {
-    const validTracks = song.tracks ? song.tracks.filter(t => t.notes.length > 0) : [];
-    if (validTracks.length > 1) {
-      // Format 1: トラック一覧を選択肢にする
-      return validTracks.map(tr => ({
-        trackIndex: tr.trackIndex,
-        channel: tr.notes[0]?.channel ?? 0,
-        label: `${tr.name} (${tr.notes.length} notes)`
-      }));
-    } else {
-      // Format 0: チャンネル一覧を選択肢にする
-      return (song.usedChannels ?? []).map(ch => ({
-        trackIndex: undefined,
-        channel: ch,
-        label: `Ch ${ch + 1} (${song.channelCaches[ch]?.noteCount ?? 0} notes)`
-      }));
-    }
-  };
-
   const persistAll = async (
     targetSongs: MidiSongData[] = songs,
     targetPresets: EnsemblePreset[] = presets,
@@ -291,7 +259,6 @@ export function App() {
       if (p.id === targetActivePresetId) {
         const slotsMap: Record<string, LaneSlot[]> = { ...p.songSlots };
         for (const s of targetSongs) {
-          // 各スロットオブジェクトを確実に複製して保存
           slotsMap[s.id] = s.slots.map(slot => ({ ...slot }));
         }
         return { ...p, songSlots: slotsMap };
@@ -385,7 +352,6 @@ export function App() {
     setDraggedSongIndex(null);
     setDragOverSongIndex(null);
 
-    // 変更後の並び順をストレージへ保存
     await persistAll(updated);
   };
 
@@ -505,60 +471,33 @@ export function App() {
     await persistAll(updatedSongs, updatedPresets, nextId);
   };
 
-  // 通常のレーン追加（親スロットの追加）
-  // 変更後: inheritPreset を受け取れるようにする（未指定時は NONE_PRESET）
-  const handleAddSlot = async (inheritPreset: InstrumentPreset = NONE_PRESET) => {
-    if (!currentSong) return;
-    const defaultCh = currentSong.usedChannels[0] ?? 0;
-    const newSlot: LaneSlot = {
-      id: crypto.randomUUID(),
-      isEnabled: true,
-      selectedChannel: defaultCh,
-      assignedPreset: inheritPreset,
-      outputChannel: defaultCh,
-      latencyOffsetMs: inheritPreset.defaultOffsetMs ?? 0.0,
-      customColor: DEFAULT_CHANNEL_COLORS[defaultCh % 16]
-    };
-    const updatedSlots = [...currentSong.slots, newSlot];
-    const updatedSong = { ...currentSong, slots: updatedSlots };
-    const updatedSongs = songs.map(s => (s.id === currentSong.id ? updatedSong : s));
+  const handleTransferToMcu = async (track: MidiTrackInfo, slotOutputChannel: number) => {
+    if (isTransferring) return;
 
-    setSongs(updatedSongs);
-    PlaybackEngine.getInstance().updateSlotConfiguration(updatedSong);
-    await persistAll(updatedSongs);
+    setIsTransferring(true);
+    setTransferProgress({
+      sent: 0,
+      total: track.notes.length * 2,
+      percentage: 0,
+      message: '接続待機中...'
+    });
+
+    const res = await StandaloneTransferManager.transferTrack(
+      track,
+      slotOutputChannel,
+      progress => setTransferProgress(progress)
+    );
+
+    setIsTransferring(false);
+    setTransferProgress(null);
+
+    if (res.success) {
+      alert(`「${track.name}」をスタンドアロン演奏データとしてマイコンへ保存しました！\nマイコンのボタン長押しで再生テストが可能です。`);
+    } else if (res.error && !res.error.includes('キャンセル')) {
+      alert(`転送に失敗しました:\n${res.error}`);
+    }
   };
 
-  // 詳細設定内での「＋ サブチャンネルを追加」
-  const handleAddChildSlot = async (parentSlot: LaneSlot) => {
-    if (!currentSong) return;
-    const existingChildren = currentSong.slots.filter(s => s.parentId === parentSlot.id);
-    const nextOutputCh = Math.min(15, (parentSlot.outputChannel ?? 0) + existingChildren.length + 1);
-    const defaultCh = currentSong.usedChannels[Math.min(currentSong.usedChannels.length - 1, existingChildren.length + 1)] ?? 0;
-
-    // ★ 親チャンネルと同じ色を取得して初期値にセット
-    const parentColor = parentSlot.customColor || DEFAULT_CHANNEL_COLORS[parentSlot.selectedChannel % 16];
-
-    const newChildSlot: LaneSlot = {
-      id: crypto.randomUUID(),
-      parentId: parentSlot.id,
-      isEnabled: true,
-      selectedChannel: defaultCh,
-      assignedPreset: parentSlot.assignedPreset,
-      outputChannel: nextOutputCh,
-      latencyOffsetMs: parentSlot.latencyOffsetMs,
-      customColor: parentColor // ★ 親と同じ色
-    };
-
-    const updatedSlots = [...currentSong.slots, newChildSlot];
-    const updatedSong = { ...currentSong, slots: updatedSlots };
-    const updatedSongs = songs.map(s => (s.id === currentSong.id ? updatedSong : s));
-
-    setSongs(updatedSongs);
-    PlaybackEngine.getInstance().updateSlotConfiguration(updatedSong);
-    await persistAll(updatedSongs);
-  };
-
-  // スロットの更新ハンドラ（未登録スロットの自動追加対応）
   const handleUpdateSlot = async (slotId: string, updates: Partial<LaneSlot>, fallbackTrack?: MidiTrackInfo) => {
     if (!currentSong) return;
 
@@ -573,7 +512,6 @@ export function App() {
         return s;
       });
     } else {
-      // ★ slotId が未保存の仮想スロット（auto_X）の場合、新規スロットとして登録
       const newSlot: LaneSlot = {
         id: crypto.randomUUID(),
         isEnabled: true,
@@ -596,19 +534,6 @@ export function App() {
     await persistAll(updatedSongs);
   };
 
-  const handleDeleteSlot = async (slotId: string) => {
-    if (!currentSong) return;
-    // 対象スロット、およびそれを親とする子スロットもまとめて削除
-    const updatedSlots = currentSong.slots.filter(s => s.id !== slotId && s.parentId !== slotId);
-    const updatedSong = { ...currentSong, slots: updatedSlots };
-    const updatedSongs = songs.map(s => (s.id === currentSong.id ? updatedSong : s));
-
-    setSongs(updatedSongs);
-    PlaybackEngine.getInstance().updateSlotConfiguration(updatedSong);
-    await persistAll(updatedSongs);
-  };
-
-  // --- 楽器手動事前登録 ---
   const handleRegisterManualMcu = () => {
     const trimmed = newMcuInput.trim();
     if (!trimmed) return;
@@ -618,7 +543,6 @@ export function App() {
     setAvailableTargets(MidiDeviceManager.getInstance().getAvailableMcuTargets());
   };
 
-  // --- セーフティ付き 楽器プリセット削除 ---
   const handleDeletePresetSafely = async (preset: InstrumentPreset) => {
     const isOnline = endpoints.some(
       ep => ep.identifiedPreset && ep.identifiedPreset.mcuName.toLowerCase() === preset.mcuName.toLowerCase()
@@ -730,7 +654,7 @@ export function App() {
           {formatTime(currentPlaybackMs)} / {formatTime(currentSong?.durationMs ?? 0)}
         </span>
 
-        {/* Click スプリットボタン（左: ON/OFF切替 / 右: オフセット設定メニュー） */}
+        {/* Click スプリットボタン */}
         <div
           ref={metroMenuRef}
           style={{
@@ -741,7 +665,6 @@ export function App() {
             position: 'relative'
           }}
         >
-          {/* 左側ボタンに minWidth を指定して幅の変動をロック */}
           <button
             onClick={() => {
               const next = !isMetronome;
@@ -749,7 +672,7 @@ export function App() {
               PlaybackEngine.getInstance().isMetronomeEnabled = next;
             }}
             style={{
-              minWidth: 94, // ★ 幅をあらかじめ固定してレイアウトシフトをゼロにする
+              minWidth: 94,
               textAlign: 'center',
               padding: '4px 6px',
               background: 'transparent',
@@ -766,10 +689,8 @@ export function App() {
             {isCountInEnabled && <span style={{ fontSize: 9, marginLeft: 3, opacity: 0.85 }}>({countInBars}小節)</span>}
           </button>
 
-          {/* 細い区切り線 */}
           <div style={{ width: 1, height: 12, background: isMetronome ? 'rgba(255,255,255,0.25)' : '#243B54' }} />
 
-          {/* 右側: ドロップダウンアクセスボタン */}
           <button
             onClick={() => setIsMetroMenuOpen(prev => !prev)}
             title="オフセット設定"
@@ -790,7 +711,6 @@ export function App() {
             ▼
           </button>
 
-          {/* ドロップダウンメニュー（オフセット設定のみ） */}
           {isMetroMenuOpen && (
             <div
               style={{
@@ -813,7 +733,6 @@ export function App() {
                 オフセット再生設定
               </div>
 
-              {/* オフセット有効/無効 */}
               <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12, cursor: 'pointer' }}>
                 <span style={{ color: '#E2EFFF' }}>オフセット再生</span>
                 <input
@@ -827,7 +746,6 @@ export function App() {
                 />
               </label>
 
-              {/* オフセット小節数 */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', opacity: isCountInEnabled ? 1 : 0.45 }}>
                 <span style={{ fontSize: 11, color: '#8FA4C4' }}>助走小節数:</span>
                 <select
@@ -855,6 +773,7 @@ export function App() {
             </div>
           )}
         </div>
+
         <button
           onClick={() => {
             const next = !isBgm;
@@ -996,7 +915,6 @@ export function App() {
                   onMouseEnter={e => (e.currentTarget.style.background = '#1C2742')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                 >
-                  <span></span>
                   <span>⚠︎ 現在のプリセットを削除</span>
                 </div>
               )}
@@ -1008,17 +926,16 @@ export function App() {
         <div style={{ background: '#1e2844', borderRadius: 6, padding: 2, display: 'flex' }}>
           <button
             onClick={() => setSelectedTab('visualizer')}
-            style={{ padding: '4px 10px', background: selectedTab === 'visualizer' ? '#5D7FAF' : 'transparent', color: selectedTab === 'visualizer' ? '#E2EFFF' : '#E2EFFF', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}
+            style={{ padding: '4px 10px', background: selectedTab === 'visualizer' ? '#5D7FAF' : 'transparent', color: '#E2EFFF', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}
           >
             Visualizer
           </button>
           <button
             onClick={() => setSelectedTab('settings')}
-            style={{ padding: '4px 10px', background: selectedTab === 'settings' ? '#5D7FAF' : 'transparent', color: selectedTab === 'settings' ? '#E2EFFF' : '#E2EFFF', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}
+            style={{ padding: '4px 10px', background: selectedTab === 'settings' ? '#5D7FAF' : 'transparent', color: '#E2EFFF', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}
           >
             Track Settings
           </button>
-          {/* ★ 追加: Calibration タブ */}
           <button
             type="button"
             onClick={() => setSelectedTab('calibration')}
@@ -1149,10 +1066,9 @@ export function App() {
               display: 'flex',
               flexDirection: 'column',
               background: '#1D202C',
-              position: 'relative' // ← absolute配置の基準にするため追加
+              position: 'relative'
             }}
           >
-            {/* ★★★ 左側（左ペイン右上隅）の滑らかなアール ★★★ */}
             <svg
               width="12"
               height="12"
@@ -1168,8 +1084,7 @@ export function App() {
               <path d="M 12 0 L 12 12 Q 12 0 0 0 Z" fill="#72829F" />
             </svg>
 
-            {/* 楽曲リスト (残り高さいっぱいに広がり、最小100pxを確保) */}
-
+            {/* 楽曲リスト */}
             <div style={{ flex: 1, minHeight: 100, padding: 12, overflowY: 'auto' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <span style={{ fontSize: 14, fontWeight: 'bold', color: '#c1cfe3' }}>楽曲リスト ({songs.length})</span>
@@ -1192,7 +1107,7 @@ export function App() {
                       e.dataTransfer.effectAllowed = 'move';
                     }}
                     onDragOver={e => {
-                      e.preventDefault(); // ドロップを許可するために必須
+                      e.preventDefault();
                       if (dragOverSongIndex !== index) {
                         setDragOverSongIndex(index);
                       }
@@ -1220,9 +1135,7 @@ export function App() {
                       cursor: isDragging ? 'grabbing' : 'grab',
                       background: isSelected ? 'rgba(78, 167, 230, 0.12)' : '#181822',
                       border: isSelected ? '1px solid #8abfdb' : '1px solid transparent',
-                      // ドラッグ中の要素は半透明化
                       opacity: isDragging ? 0.35 : 1.0,
-                      // ★ borderTop をやめ、boxShadow で上部に青いインジケーター線を描画
                       boxShadow: isDragOver ? '0 -3px 0 0 #cbd9eb' : 'none',
                       transition: 'opacity 0.15s',
                       userSelect: 'none'
@@ -1283,7 +1196,7 @@ export function App() {
                 userSelect: 'none',
                 transition: 'background 0.15s',
                 zIndex: 10,
-                position: 'relative' // ★ 相対配置の基準にするため追加
+                position: 'relative'
               }}
               onMouseEnter={e => {
                 if (!isResizingSidebar) e.currentTarget.style.background = '#72829F';
@@ -1292,7 +1205,6 @@ export function App() {
                 if (!isResizingSidebar) e.currentTarget.style.background = '#72829F';
               }}
             >
-              {/* 控えめな1本バー */}
               <div
                 style={{
                   width: 30,
@@ -1302,7 +1214,6 @@ export function App() {
                 }}
               />
 
-              {/* ★★★ 1. 上側の滑らかなアール (12px) ★★★ */}
               <svg
                 width="12"
                 height="12"
@@ -1317,7 +1228,6 @@ export function App() {
                 <path d="M 12 12 L 12 0 Q 12 12 0 12 Z" fill="#72829F" />
               </svg>
 
-              {/* ★★★ 2. 下側の滑らかなアール (12px) ★★★ */}
               <svg
                 width="12"
                 height="12"
@@ -1329,7 +1239,7 @@ export function App() {
                   pointerEvents: 'none'
                 }}
               >
-                <path d="M 12 0 L 12 12 Q 12 0 0 0 Z" fill="#72829F" />
+                <path d="M 12 0 L 12 12 Q 0 0 12 0 Z" fill="#72829F" />
               </svg>
             </div>
 
@@ -1450,8 +1360,6 @@ export function App() {
 
         {/* 右ペイン */}
         <div style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column' }}>
-          
-          {/* ★★★ ここに追加: 左ペインとトランスポートバーの直角を埋める滑らかなアール ★★★ */}
           {isSidebarOpen && (
             <svg
               width="12"
@@ -1508,7 +1416,7 @@ export function App() {
                     <input
                       type="checkbox"
                       checked={isChromaKey}
-                     onChange={e => setIsChromaKey(e.target.checked)}
+                      onChange={e => setIsChromaKey(e.target.checked)}
                     /> クロマキー
                   </label>
                   <label style={{ color: isChromaKey ? '#101F33' : '#E2EFFF', cursor: 'pointer' }}>
@@ -1535,8 +1443,7 @@ export function App() {
             <div style={{ padding: '24px 32px', overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
               {currentSong ? (
                 <div style={{ maxWidth: 880, margin: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
-                  
-                  {/* 1. 上部BGM連携バー */}
+                  {/* 上部BGM連携バー */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingBottom: 2 }}>
                     <label style={{ fontSize: 12, background: '#175883', color: '#E2EFFF', padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}>
                       BGM音声を紐付け (.mp3, .wav, .ogg)
@@ -1545,7 +1452,7 @@ export function App() {
                     {currentSong.bgmFileName && <span style={{ fontSize: 12, color: '#88D5DA' }}>{currentSong.bgmFileName}</span>}
                   </div>
 
-                  {/* 2. トラックカード一覧 */}
+                  {/* トラックカード一覧 */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {(() => {
                       const tracks = currentSong.tracks && currentSong.tracks.length > 0
@@ -1722,6 +1629,36 @@ export function App() {
                                 {slot.latencyOffsetMs}ms
                               </span>
                             </div>
+
+                            {/* マイコンへのスタンドアロン転送ボタン */}
+                            <button
+                              type="button"
+                              onClick={() => handleTransferToMcu(track, slot.outputChannel ?? (track.notes[0]?.channel ?? 0))}
+                              disabled={isTransferring}
+                              title="このトラックの演奏データをマイコンに保存します（スタンドアロン演奏用）"
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 4,
+                                padding: '4px 8px',
+                                background: '#38456f',
+                                border: '1px solid #36485E',
+                                borderRadius: 5,
+                                color: '#E3EFFF',
+                                fontSize: 11,
+                                fontWeight: 'bold',
+                                cursor: isTransferring ? 'not-allowed' : 'pointer',
+                                whiteSpace: 'nowrap'
+                              }}
+                              onMouseEnter={e => {
+                                if (!isTransferring) e.currentTarget.style.background = '#38456f';
+                              }}
+                              onMouseLeave={e => {
+                                if (!isTransferring) e.currentTarget.style.background = '#38456f';
+                              }}
+                            >
+                              <span>転送</span>
+                            </button>
                           </div>
                         );
                       });
@@ -1736,7 +1673,7 @@ export function App() {
             </div>
           )}
 
-          {/* ★★★ ③ 追加: Calibration 画面 ★★★ */}
+          {/* ③ Calibration 画面 */}
           {selectedTab === 'calibration' && (
             <div style={{ flex: 1, height: '100%', minHeight: 0, overflow: 'hidden' }}>
               <CalibrationView />
@@ -1745,7 +1682,57 @@ export function App() {
         </div>
       </div>
 
-      {/* 3. 楽器プリセット管理モーダル (セーフティ機能付き) */}
+      {/* 転送プログレスオーバーレイ */}
+      {isTransferring && transferProgress && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.7)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 3000
+          }}
+        >
+          <div
+            style={{
+              width: 380,
+              background: '#141D34',
+              border: '1.5px solid #DBB28A',
+              borderRadius: 8,
+              boxShadow: '0 8px 30px rgba(0,0,0,0.8)',
+              padding: 24,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 14
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 'bold', color: '#E2EFFF' }}>
+              スタンドアロン演奏データを転送中
+            </div>
+
+            <div style={{ width: '100%', height: 8, background: '#1C2742', borderRadius: 4, overflow: 'hidden' }}>
+              <div
+                style={{
+                  height: '100%',
+                  width: `${transferProgress.percentage}%`,
+                  background: 'linear-gradient(90deg, #22D3EE, #A855F7)',
+                  borderRadius: 4,
+                  transition: 'width 0.15s ease'
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#8FA4C4' }}>
+              <span>{transferProgress.message}</span>
+              <span style={{ fontWeight: 'bold', color: '#E2EFFF' }}>{transferProgress.percentage}%</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 楽器プリセット管理モーダル */}
       {isManageModalOpen && (
         <div
           style={{
@@ -1783,7 +1770,6 @@ export function App() {
               </button>
             </div>
 
-            {/* 登録済み一覧 */}
             <div style={{ maxHeight: 250, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
               {knownPresets.filter(p => p.id !== 0 && p.mcuName !== 'None').length === 0 && (
                 <div style={{ color: '#8FA4C4', fontSize: 12, padding: '12px 0', textAlign: 'center' }}>
@@ -1816,7 +1802,6 @@ export function App() {
                     <div>
                       <div style={{ fontWeight: 'bold', fontSize: 13 }}>
                         {isOnline ? '🟢' : '⚪'} {preset.name}
-                        
                       </div>
                       <div style={{ fontSize: 11, color: '#8FA4C4', marginTop: 2 }}>
                         {isOnline ? '実機接続中' : '未接続'} / {usedCount > 0 ? `${usedCount}箇所のスロットで使用中` : '未使用'}
@@ -1845,7 +1830,6 @@ export function App() {
               })}
             </div>
 
-            {/* 実機なし手動追加フォーム */}
             <div style={{ borderTop: '1px solid #243B54', paddingTop: 14 }}>
               <div style={{ fontSize: 12, fontWeight: 'bold', color: '#8FA4C4', marginBottom: 6 }}>
                 楽器名を事前登録
@@ -1884,8 +1868,6 @@ export function App() {
                 </button>
               </div>
             </div>
-
-            
           </div>
         </div>
       )}
