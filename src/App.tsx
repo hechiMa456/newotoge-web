@@ -8,6 +8,7 @@ import { UnifiedMidiEndpoint } from './engine/midi/types';
 import { loadRegisteredPresets, registerMcuPreset, deleteRegisteredPreset, InstrumentPreset, NONE_PRESET } from './models/InstrumentPreset';
 import { CanvasVisualizer } from './visualizer/CanvasVisualizer';
 import { CircularColorPicker } from './components/CircularColorPicker';
+import { CalibrationView } from './components/calibration/CalibrationView';
 
 // デフォルトのチャンネル色配列 (カスタム未設定時に適用)
 const DEFAULT_CHANNEL_COLORS = [
@@ -49,7 +50,7 @@ export function App() {
   const presetMenuRef = useRef<HTMLDivElement | null>(null);
 
   // ビジュアライザー設定
-  const [selectedTab, setSelectedTab] = useState<'visualizer' | 'settings'>('visualizer');
+  const [selectedTab, setSelectedTab] = useState<'visualizer' | 'settings' | 'calibration'>('visualizer');
   const [isControlBarOpen, setIsControlBarOpen] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlaybackMs, setCurrentPlaybackMs] = useState(0);
@@ -987,7 +988,7 @@ export function App() {
                     padding: '6px 12px',
                     fontSize: 12,
                     cursor: 'pointer',
-                    color: '#b4bac1',
+                    color: '#ca697e',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 0
@@ -1016,6 +1017,23 @@ export function App() {
             style={{ padding: '4px 10px', background: selectedTab === 'settings' ? '#5D7FAF' : 'transparent', color: selectedTab === 'settings' ? '#E2EFFF' : '#E2EFFF', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}
           >
             Track Settings
+          </button>
+          {/* ★ 追加: Calibration タブ */}
+          <button
+            type="button"
+            onClick={() => setSelectedTab('calibration')}
+            style={{
+              padding: '4px 10px',
+              background: selectedTab === 'calibration' ? '#5D7FAF' : 'transparent',
+              color: '#E2EFFF',
+              border: 'none',
+              borderRadius: 3,
+              cursor: 'pointer',
+              fontSize: 12,
+              fontWeight: 'bold'
+            }}
+          >
+            Calibration
           </button>
         </div>
 
@@ -1451,7 +1469,8 @@ export function App() {
             </svg>
           )}
 
-          {selectedTab === 'visualizer' ? (
+          {/* ① Visualizer 画面 */}
+          {selectedTab === 'visualizer' && (
             <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
               {isControlBarOpen && (
                 <div
@@ -1485,7 +1504,6 @@ export function App() {
                   <label style={{ color: isChromaKey ? '#101F33' : '#E2EFFF', cursor: 'pointer' }}>
                     <input type="checkbox" checked={showAllCh} onChange={e => setShowAllCh(e.target.checked)} /> 全Ch表示
                   </label>
-                  {/* ↓↓↓ 修正後: isChromaKey を正しくバインド ↓↓↓ */}
                   <label style={{ color: isChromaKey ? '#101F33' : '#E2EFFF', cursor: 'pointer' }}>
                     <input
                       type="checkbox"
@@ -1493,7 +1511,6 @@ export function App() {
                      onChange={e => setIsChromaKey(e.target.checked)}
                     /> クロマキー
                   </label>
-                  
                   <label style={{ color: isChromaKey ? '#101F33' : '#E2EFFF', cursor: 'pointer' }}>
                     <input type="checkbox" checked={showDebug} onChange={e => setShowDebug(e.target.checked)} /> デバッグ
                   </label>
@@ -1511,8 +1528,10 @@ export function App() {
                 />
               </div>
             </div>
-          ) : (
-            /* 右ペイン：トラック設定画面 (DAWライク・1行完結型カードUI) */
+          )}
+
+          {/* ② Track Settings 画面 */}
+          {selectedTab === 'settings' && (
             <div style={{ padding: '24px 32px', overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
               {currentSong ? (
                 <div style={{ maxWidth: 880, margin: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -1529,12 +1548,10 @@ export function App() {
                   {/* 2. トラックカード一覧 */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {(() => {
-                      // ★ 自動マイグレーション：tracksが存在するのにslotsが旧形式の場合は安全に自動修復
                       const tracks = currentSong.tracks && currentSong.tracks.length > 0
                         ? currentSong.tracks.filter(t => t.notes.length > 0)
                         : [];
 
-                      // ★★★ 変更箇所 2 START ★★★
                       return tracks.map((track, idx) => {
                         let slot = currentSong.slots.find(s => s.trackIndex === track.trackIndex);
                         if (!slot) {
@@ -1569,11 +1586,10 @@ export function App() {
                               transition: 'background 0.15s'
                             }}
                           >
-                            {/* ① 有効 / 無効 チェックボックス */}
+                            {/* 有効 / 無効 チェックボックス */}
                             <input
                               type="checkbox"
                               checked={slot.isEnabled}
-                              /* ★ 引数末尾に , track を追加 */
                               onChange={e => handleUpdateSlot(slot.id, { isEnabled: e.target.checked }, track)}
                               style={{ width: 16, height: 16, cursor: 'pointer' }}
                             />
@@ -1600,7 +1616,7 @@ export function App() {
 
                             <span style={{ color: '#6A789A', fontSize: 12 }}>➔</span>
 
-                            {/* ② 送信先ポート（デバイス） */}
+                            {/* 送信先ポート（デバイス） */}
                             <div style={{ flex: 1, minWidth: 140 }}>
                               <select
                                 value={
@@ -1614,7 +1630,6 @@ export function App() {
                                   const target = availableTargets.find(
                                     t => (t.endpointId ? t.endpointId === val : t.mcuName === val)
                                   ) ?? NONE_PRESET;
-                                  /* ★ 引数末尾に , track を追加 */
                                   handleUpdateSlot(slot.id, {
                                     assignedPreset: target,
                                     latencyOffsetMs: target.defaultOffsetMs ?? slot.latencyOffsetMs
@@ -1642,12 +1657,11 @@ export function App() {
                               </select>
                             </div>
 
-                            {/* ③ 送信チャンネル (Ch 1〜16) */}
+                            {/* 送信チャンネル (Ch 1〜16) */}
                             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                               <span style={{ fontSize: 11, color: '#8FA4C4' }}>送信Ch:</span>
                               <select
                                 value={slot.outputChannel ?? (track.notes[0]?.channel ?? 0)}
-                                /* ★ 引数末尾に , track を追加 */
                                 onChange={e => handleUpdateSlot(slot.id, { outputChannel: Number(e.target.value) }, track)}
                                 style={{
                                   background: '#3D4764',
@@ -1687,14 +1701,13 @@ export function App() {
                               {isColorPickerOpen && (
                                 <CircularColorPicker
                                   color={currentColor}
-                                  /* ★ 引数末尾に , track を追加 */
                                   onChange={newColor => handleUpdateSlot(slot.id, { customColor: newColor }, track)}
                                   onClose={() => setActiveColorPickerSlotId(null)}
                                 />
                               )}
                             </div>
 
-                            {/* ④ 遅延補正スライダー */}
+                            {/* 遅延補正スライダー */}
                             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                               <input
                                 type="range"
@@ -1702,7 +1715,6 @@ export function App() {
                                 max={200}
                                 step={1}
                                 value={slot.latencyOffsetMs}
-                                /* ★ 引数末尾に , track を追加 */
                                 onChange={e => handleUpdateSlot(slot.id, { latencyOffsetMs: Number(e.target.value) }, track)}
                                 style={{ width: 75 }}
                               />
@@ -1713,7 +1725,6 @@ export function App() {
                           </div>
                         );
                       });
-// ★★★ 変更箇所 2 END ★★★
                     })()}
                   </div>
                 </div>
@@ -1722,6 +1733,13 @@ export function App() {
                   左側の楽曲リストから楽曲を選択してください。
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ★★★ ③ 追加: Calibration 画面 ★★★ */}
+          {selectedTab === 'calibration' && (
+            <div style={{ flex: 1, height: '100%', minHeight: 0, overflow: 'hidden' }}>
+              <CalibrationView />
             </div>
           )}
         </div>
@@ -1811,7 +1829,7 @@ export function App() {
                       title={isOnline ? '物理接続中のため削除できません' : 'プリセットを削除'}
                       style={{
                         padding: '4px 8px',
-                        background: isOnline ? '#2C3446' : '#334660',
+                        background: isOnline ? '#2C3446' : '#BD425C',
                         color: isOnline ? '#6A768F' : '#ffffff',
                         border: 'none',
                         borderRadius: 6,
