@@ -1239,7 +1239,7 @@ export function App() {
                   pointerEvents: 'none'
                 }}
               >
-                <path d="M 12 0 L 12 12 Q 0 0 12 0 Z" fill="#72829F" />
+                <path d="M 12 0 L 12 12 Q 12 0 0 0 Z" fill="#72829F" />
               </svg>
             </div>
 
@@ -1545,7 +1545,7 @@ export function App() {
                                 style={{
                                   width: '100%',
                                   background: '#3D4764',
-                                  color: slot.assignedPreset?.id !== 0 ? '#bab0ff' : '#E2EFFF',
+                                  color: slot.assignedPreset?.id !== 0 ? '#E2EFFF' : '#E2EFFF',
                                   border: '1px solid #4e598c',
                                   borderRadius: 6,
                                   padding: '5px 8px',
