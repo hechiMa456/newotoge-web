@@ -350,9 +350,13 @@ export const CanvasVisualizer: React.FC<Props> = ({
               ctx.shadowBlur = 0;
             }
 
-            // ★ プリロール中のノーツ（目標位置より前）は透過度を下げて暗く見せる
-          const isPrerollNote = isPrerolling && noteStartWithOffset < targetMs;
-          ctx.globalAlpha = isPrerollNote ? 0.30 : 1.0; // 薄くする
+            // ★ プリロール中のノーツは薄くするが、ヒット中（!isHit）のノーツは 100% の輝度で発光させる
+          // ★ 再生開始時点（targetMs）で判定ラインに触れている／跨いでいるノーツかどうか
+            const isTouchingAtStart = noteStartWithOffset <= targetMs && noteEndWithOffset >= targetMs;
+
+            // プリロール中のノーツは薄暗くするが、「再生開始時に判定ラインに触れているノーツ」は通常通りの色（透過度1.0）で降らせる
+            const isPrerollNote = isPrerolling && (noteStartWithOffset < targetMs) && !isTouchingAtStart;
+            ctx.globalAlpha = isPrerollNote ? 0.30 : 1.0;
 
           // ① ノーツ本体の塗り
           ctx.fillStyle = isHit ? hitLuminescentColor : st.color;
