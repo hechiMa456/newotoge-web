@@ -227,9 +227,19 @@ export class MidiDeviceManager {
   /**
    * 登録済みMCU一覧をベースに、接続中デバイス情報（オンライン状態 / #1, #2 枝番）を合成して選択肢を動的生成
    */
+  /**
+   * 登録済みMCU一覧をベースに、接続中デバイス情報（オンライン状態 / #1, #2 枝番 / 接続経路）を合成して選択肢を動的生成
+   */
   public getAvailableMcuTargets(): InstrumentPreset[] {
     const targets: InstrumentPreset[] = [NONE_PRESET];
     const registered = loadRegisteredPresets().filter(p => p.id !== 0 && p.mcuName !== 'None');
+
+    // 通信経路の表示用ラベル整形ヘルパー
+    const getTransportLabel = (ep: UnifiedMidiEndpoint): string => {
+      if (ep.transport === 'ble-gatt') return ' [BLE]';
+      if (ep.transport === 'web-midi') return ' [USB]';
+      return '';
+    };
 
     // 接続中のエンドポイントを mcuName ごとにグループ化
     const connectedGroups: Record<string, UnifiedMidiEndpoint[]> = {};
@@ -247,12 +257,16 @@ export class MidiDeviceManager {
       const connected = connectedGroups[key];
 
       if (connected && connected.length > 0) {
-        // 接続中 (オンライン): 複数台なら #1, #2 を付与
+        // 接続中 (オンライン)
         const isMultiple = connected.length > 1;
         connected.forEach((ep, idx) => {
+          const transLabel = getTransportLabel(ep);
           targets.push({
             ...preset,
-            name: isMultiple ? `${preset.name} (#${idx + 1})` : preset.name,
+            // 例: "PowerChordGT (#1) [USB]" や "PowerChordGT (#2) [BLE]"
+            name: isMultiple
+              ? `${preset.name} (#${idx + 1})${transLabel}`
+              : `${preset.name}${transLabel}`,
             instanceIndex: idx + 1,
             endpointId: ep.id,
             isOnline: true
@@ -274,9 +288,12 @@ export class MidiDeviceManager {
       const isMultiple = group.length > 1;
       group.forEach((ep, idx) => {
         const basePreset = ep.identifiedPreset!;
+        const transLabel = getTransportLabel(ep);
         targets.push({
           ...basePreset,
-          name: isMultiple ? `${basePreset.name} (#${idx + 1})` : basePreset.name,
+          name: isMultiple
+            ? `${basePreset.name} (#${idx + 1})${transLabel}`
+            : `${basePreset.name}${transLabel}`,
           instanceIndex: idx + 1,
           endpointId: ep.id,
           isOnline: true
