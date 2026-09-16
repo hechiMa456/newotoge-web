@@ -335,12 +335,14 @@ export class PlaybackEngine {
     for (const slot of this.activeSong.slots) {
       if (!slot.isEnabled || !slot.assignedPreset || slot.assignedPreset.id === 0 || slot.assignedPreset.mcuName === 'None') continue;
 
-      // ★ スロットに紐づくノート一覧を安全に取得
+      // ★ スロットに紐づくノート一覧を取得（元Chのフィルタリングに対応）
       let notesToSchedule: MidiNote[] = [];
       if (typeof slot.trackIndex === 'number' && this.activeSong.tracks) {
         const targetTrack = this.activeSong.tracks.find(t => t.trackIndex === slot.trackIndex);
         if (targetTrack) {
-          notesToSchedule = targetTrack.notes;
+          notesToSchedule = (typeof slot.selectedChannel === 'number' && slot.selectedChannel >= 0)
+            ? targetTrack.notes.filter(n => n.channel === slot.selectedChannel)
+            : targetTrack.notes;
         }
       }
       
@@ -426,13 +428,19 @@ export class PlaybackEngine {
     }
 
     // ★ 2. Note On 送信（プリロール目標位置に到達している場合のみ）
-    if (curMs >= this.prerollTargetMs) {
-      while (this.nextNoteIdx < this.scheduledNotes.length && this.scheduledNotes[this.nextNoteIdx].adjustedOnTimeMs <= curMs) {
+    // ★ 修正: プリロール目標位置の「手前（最大遅延補正 200ms 分）」から先行 Note On の送信を許可
+    // これにより、0ms冒頭のノートに対して -50ms や -100ms の先行発火が正常にマイコンへ届きます
+    const ALLOW_PRE_SEND_MS = 250; // 最大レイテンシー補正マージン
+    if (curMs >= (this.prerollTargetMs - ALLOW_PRE_SEND_MS)) {
+      while (
+        this.nextNoteIdx < this.scheduledNotes.length &&
+        this.scheduledNotes[this.nextNoteIdx].adjustedOnTimeMs <= curMs
+      ) {
         const item = this.scheduledNotes[this.nextNoteIdx++];
         if (item.endpointId && epMap.has(item.endpointId)) {
           const ep = epMap.get(item.endpointId)!;
 
-          // ★ セーフティ: 同一チャンネル・同一ピッチがまだ発音中なら、新音送信前に先行してNoteOffを送る
+          // 同一ピッチの先行NoteOff
           const existingIdx = this.activeNotes.findIndex(
             an => an.endpointId === item.endpointId && an.channel === item.channel && an.pitch === item.pitch
           );

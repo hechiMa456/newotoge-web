@@ -10,10 +10,12 @@ export interface TransferProgress {
 export class StandaloneTransferManager {
   /**
    * トラック情報からスタンドアロン演奏用の5バイトパケットバイナリを生成
+   * filterChannel が指定されている場合は該当Chのみを抽出
    */
   public static compileTrackData(
     track: MidiTrackInfo,
-    outputChannel: number
+    outputChannel: number,
+    filterChannel?: number
   ): { data: Uint8Array; totalEvents: number } {
     const rawEvents: Array<{
       timeMs: number;
@@ -23,17 +25,17 @@ export class StandaloneTransferManager {
     }> = [];
 
     const ch = Math.max(0, Math.min(15, outputChannel));
+    const targetNotes = (typeof filterChannel === 'number' && filterChannel >= 0)
+      ? track.notes.filter(n => n.channel === filterChannel)
+      : track.notes;
 
-    // NoteOn と NoteOff をそれぞれ独立したイベントとして展開
-    for (const note of track.notes) {
-      // NoteOn
+    for (const note of targetNotes) {
       rawEvents.push({
         timeMs: note.startTimeMs,
         status: 0x90 | ch,
         pitch: Math.max(0, Math.min(127, note.pitch)),
         velocity: Math.max(1, Math.min(127, note.velocity || 100))
       });
-      // NoteOff
       rawEvents.push({
         timeMs: note.endTimeMs,
         status: 0x80 | ch,
@@ -42,7 +44,6 @@ export class StandaloneTransferManager {
       });
     }
 
-    // 時系列順にソート（同時刻なら NoteOff を優先）
     rawEvents.sort((a, b) => {
       if (a.timeMs !== b.timeMs) return a.timeMs - b.timeMs;
       return (a.status & 0xF0) === 0x80 ? -1 : 1;
@@ -54,7 +55,7 @@ export class StandaloneTransferManager {
     for (const ev of rawEvents) {
       let delta = Math.round(ev.timeMs - prevMs);
       if (delta < 0) delta = 0;
-      if (delta > 0xFFFF) delta = 0xFFFF; // 2バイト上限 (約65秒)
+      if (delta > 0xFFFF) delta = 0xFFFF;
 
       outputBytes.push(
         ev.status,
@@ -63,7 +64,6 @@ export class StandaloneTransferManager {
         (delta >> 8) & 0xFF,
         delta & 0xFF
       );
-
       prevMs += delta;
     }
 
@@ -79,6 +79,7 @@ export class StandaloneTransferManager {
   public static async transferTrack(
     track: MidiTrackInfo,
     outputChannel: number,
+    filterChannel?: number,
     onProgress?: (progress: TransferProgress) => void
   ): Promise<{ success: boolean; error?: string }> {
     const nav = navigator as any;
@@ -86,7 +87,7 @@ export class StandaloneTransferManager {
       return { success: false, error: 'Web Serial API に未対応のブラウザです。Google Chromeをご利用ください。' };
     }
 
-    const { data, totalEvents } = this.compileTrackData(track, outputChannel);
+    const { data, totalEvents } = this.compileTrackData(track, outputChannel, filterChannel);
     if (totalEvents === 0) {
       return { success: false, error: '転送対象のノーツが存在しません。' };
     }

@@ -228,18 +228,12 @@ export class MidiDeviceManager {
    * 登録済みMCU一覧をベースに、接続中デバイス情報（オンライン状態 / #1, #2 枝番）を合成して選択肢を動的生成
    */
   /**
-   * 登録済みMCU一覧をベースに、接続中デバイス情報（オンライン状態 / #1, #2 枝番 / 接続経路）を合成して選択肢を動的生成
+   * 登録済みMCU一覧をベースに選択肢を動的生成
+   * ★ 同一MCUで USB と BLE の両方が接続されている場合のみ [USB] / [BLE] を付与
    */
   public getAvailableMcuTargets(): InstrumentPreset[] {
     const targets: InstrumentPreset[] = [NONE_PRESET];
     const registered = loadRegisteredPresets().filter(p => p.id !== 0 && p.mcuName !== 'None');
-
-    // 通信経路の表示用ラベル整形ヘルパー
-    const getTransportLabel = (ep: UnifiedMidiEndpoint): string => {
-      if (ep.transport === 'ble-gatt') return ' [BLE]';
-      if (ep.transport === 'web-midi') return ' [USB]';
-      return '';
-    };
 
     // 接続中のエンドポイントを mcuName ごとにグループ化
     const connectedGroups: Record<string, UnifiedMidiEndpoint[]> = {};
@@ -251,22 +245,33 @@ export class MidiDeviceManager {
       }
     }
 
-    // 登録済みプリセットを走査
+    // 表示名フォーマットヘルパー
+    const formatTargetName = (baseName: string, ep: UnifiedMidiEndpoint, group: UnifiedMidiEndpoint[]): string => {
+      const hasUsb = group.some(e => e.transport === 'web-midi');
+      const hasBle = group.some(e => e.transport === 'ble-gatt');
+      const hasMixedTransports = hasUsb && hasBle;
+
+      // 同一トランスポート内で2台以上ある場合のみ枝番 (#1, #2) を付与
+      const sameTransportEps = group.filter(e => e.transport === ep.transport);
+      const indexStr = sameTransportEps.length > 1 ? ` (#${sameTransportEps.indexOf(ep) + 1})` : '';
+
+      // USBとBLEの両方が混在接続されている場合のみ [USB] / [BLE] を付与
+      const transStr = hasMixedTransports ? (ep.transport === 'ble-gatt' ? ' [BLE]' : ' [USB]') : '';
+
+      return `${baseName}${indexStr}${transStr}`;
+    };
+
+    // 1. 登録済みプリセットを走査
     for (const preset of registered) {
       const key = preset.mcuName.toLowerCase();
       const connected = connectedGroups[key];
 
       if (connected && connected.length > 0) {
         // 接続中 (オンライン)
-        const isMultiple = connected.length > 1;
         connected.forEach((ep, idx) => {
-          const transLabel = getTransportLabel(ep);
           targets.push({
             ...preset,
-            // 例: "PowerChordGT (#1) [USB]" や "PowerChordGT (#2) [BLE]"
-            name: isMultiple
-              ? `${preset.name} (#${idx + 1})${transLabel}`
-              : `${preset.name}${transLabel}`,
+            name: formatTargetName(preset.name, ep, connected),
             instanceIndex: idx + 1,
             endpointId: ep.id,
             isOnline: true
@@ -283,17 +288,13 @@ export class MidiDeviceManager {
       }
     }
 
-    // 登録リスト外だが接続されているデバイスがあれば追加
+    // 2. 登録リスト外だが接続されているデバイスがあれば追加
     for (const [, group] of Object.entries(connectedGroups)) {
-      const isMultiple = group.length > 1;
       group.forEach((ep, idx) => {
         const basePreset = ep.identifiedPreset!;
-        const transLabel = getTransportLabel(ep);
         targets.push({
           ...basePreset,
-          name: isMultiple
-            ? `${basePreset.name} (#${idx + 1})${transLabel}`
-            : `${basePreset.name}${transLabel}`,
+          name: formatTargetName(basePreset.name, ep, group),
           instanceIndex: idx + 1,
           endpointId: ep.id,
           isOnline: true
