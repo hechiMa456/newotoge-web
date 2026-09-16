@@ -10,6 +10,7 @@ export interface LaneSlot {
   latencyOffsetMs: number;
   customColor?: string;
   parentId?: string;            // 親スロットのID（子レーンのみ指定）
+  channelColors?: Record<number, string>;
 }
 
 export interface EnsemblePreset {

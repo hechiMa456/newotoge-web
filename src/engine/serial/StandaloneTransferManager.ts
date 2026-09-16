@@ -14,8 +14,7 @@ export class StandaloneTransferManager {
    */
   public static compileTrackData(
     track: MidiTrackInfo,
-    outputChannel: number,
-    filterChannel?: number
+    outputChannel: number
   ): { data: Uint8Array; totalEvents: number } {
     const rawEvents: Array<{
       timeMs: number;
@@ -24,12 +23,12 @@ export class StandaloneTransferManager {
       velocity: number;
     }> = [];
 
-    const ch = Math.max(0, Math.min(15, outputChannel));
-    const targetNotes = (typeof filterChannel === 'number' && filterChannel >= 0)
-      ? track.notes.filter(n => n.channel === filterChannel)
-      : track.notes;
+    // ★ 全ノートを対象にする
+    for (const note of track.notes) {
+      const ch = (outputChannel >= 0)
+        ? (outputChannel & 0x0F)
+        : (note.channel & 0x0F);
 
-    for (const note of targetNotes) {
       rawEvents.push({
         timeMs: note.startTimeMs,
         status: 0x90 | ch,
@@ -87,7 +86,7 @@ export class StandaloneTransferManager {
       return { success: false, error: 'Web Serial API に未対応のブラウザです。Google Chromeをご利用ください。' };
     }
 
-    const { data, totalEvents } = this.compileTrackData(track, outputChannel, filterChannel);
+    const { data, totalEvents } = this.compileTrackData(track, outputChannel);
     if (totalEvents === 0) {
       return { success: false, error: '転送対象のノーツが存在しません。' };
     }

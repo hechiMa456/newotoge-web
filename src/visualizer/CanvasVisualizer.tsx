@@ -1,8 +1,6 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react';
+import React, { useRef, useEffect, useMemo } from 'react';
 import { MidiSongData, MidiNote } from '../models/SongModels';
 import { PlaybackEngine } from '../engine/audio/PlaybackEngine';
-
-
 
 interface Props {
   song: MidiSongData | null;
@@ -48,9 +46,10 @@ function getHitLuminescentColor(hexColor: string): string {
 // レーン内で統合描画される各チャンネル（親ChまたはサブCh）の情報
 interface VisualizerSubTrack {
   channel: number;
-  trackIndex?: number; // ★ この行を追加
+  trackIndex?: number;
   color: string;
   latencyOffsetMs: number;
+  channelColors?: Record<number, string>; // ★ 追加
 }
 
 interface VisualizerLane {
@@ -58,37 +57,38 @@ interface VisualizerLane {
   title: string;
   presetId: number;
   isAssigned: boolean;
-  color: string; // ヘッダーアンダーライン用の代表色
+  color: string; // 代表色
   subTracks: VisualizerSubTrack[];
   totalNoteCount: number;
 }
 
-// レーン情報の算出 (通常モード: 割り当て済み楽器のみ / 全Ch表示モード: Noneも含めた全貌表示)
+// レーン情報の算出 (通常モード: 同一楽器にまとめて統合描画 / 全Ch表示モード: Noneも含めた全貌表示)
 function getRenderLanes(song: MidiSongData | null, showAllChannels: boolean): VisualizerLane[] {
   if (!song) return [];
 
   const grayColor = 'rgba(115, 115, 122, 0.45)';
 
   if (!showAllChannels) {
-    // 【通常モード】楽器が割り当てられている（None ではない）スロットのみを抽出し、同一楽器ごとに統合
+    // 【通常モード】同一楽器（同一MCU・同一ポート）ごとに1本のレーンへ統合
     const map = new Map<string, VisualizerLane>();
 
     for (const slot of song.slots) {
-      // 無効化されているスロットはスキップ
       if (!slot.isEnabled) continue;
 
       const preset = slot.assignedPreset;
       const isAssigned = !!(preset && preset.id !== 0 && preset.mcuName !== 'None');
-
-      // ★ バグ修正1: 送信先が None (未割当) のトラックは通常ビジュアライザーには表示しない
       if (!isAssigned) continue;
 
-      // 対象トラックを取得してノート数をチェック
       const track = song.tracks?.find(t => t.trackIndex === slot.trackIndex);
-      const noteCount = track ? track.notes.length : (song.channelCaches[slot.selectedChannel]?.noteCount ?? 0);
-      if (noteCount === 0) continue;
+      const targetNotes = track
+        ? ((typeof slot.selectedChannel === 'number' && slot.selectedChannel >= 0)
+            ? track.notes.filter(n => n.channel === slot.selectedChannel)
+            : track.notes)
+        : (song.channelCaches[slot.selectedChannel]?.notes ?? []);
 
-      // 同一ポート/同一MCUごとにグループ化
+      if (targetNotes.length === 0) continue;
+
+      // 同一ポート/同一MCUごとにグループ化して同一レーンにする
       const groupKey = preset.endpointId ? `${preset.mcuName}_${preset.endpointId}` : preset.mcuName;
       const slotColor = slot.customColor || DEFAULT_CHANNEL_COLORS[(slot.trackIndex ?? slot.selectedChannel) % 16];
 
@@ -109,15 +109,15 @@ function getRenderLanes(song: MidiSongData | null, showAllChannels: boolean): Vi
         channel: slot.selectedChannel,
         trackIndex: slot.trackIndex,
         color: slotColor,
-        latencyOffsetMs: slot.latencyOffsetMs || 0
+        latencyOffsetMs: slot.latencyOffsetMs || 0,
+        channelColors: slot.channelColors // ★ 追加
       });
-      lane.totalNoteCount += noteCount;
+      lane.totalNoteCount += targetNotes.length;
     }
 
     return Array.from(map.values());
   } else {
     // 【全Ch表示（全トラックデバッグ）モード】
-    // 存在する全トラックを並べる。楽器割当済みは独自色＆楽器名、None はグレー＆「None」表記
     const tracksToDisplay = (song.tracks && song.tracks.length > 0) ? song.tracks : [];
 
     return tracksToDisplay
@@ -132,7 +132,6 @@ function getRenderLanes(song: MidiSongData | null, showAllChannels: boolean): Vi
           slot.assignedPreset.mcuName !== 'None'
         );
 
-        // ★ バグ修正2: 割当済みなら楽器名と設定色、未割当(None)なら「None」とグレー色を適用
         const laneTitle = isAssigned && slot ? `${slot.assignedPreset.name} (${tr.name})` : `None (${tr.name})`;
         const laneColor = isAssigned && slot
           ? (slot.customColor || DEFAULT_CHANNEL_COLORS[idx % 16])
@@ -165,9 +164,8 @@ export const CanvasVisualizer: React.FC<Props> = ({
   showDebugHUD = false
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const hudRef = useRef<HTMLDivElement | null>(null); // ★ 追加: DOMを直接操作するref
+  const hudRef = useRef<HTMLDivElement | null>(null);
 
-  // ★ 修正: useMemo でメモ化し、50msごとの無駄な再生成・タイマーリセットを完全に防ぐ
   const lanes = useMemo(() => getRenderLanes(song, showAllChannels), [song, showAllChannels]);
 
   useEffect(() => {
@@ -189,7 +187,6 @@ export const CanvasVisualizer: React.FC<Props> = ({
 
       if (now - lastFpsUpdate >= 500) {
         const fps = (frameCount * 1000) / (now - lastFpsUpdate);
-        // ★ 修正: 直接テキストを書き込む (Reactの再描画を発生させない)
         if (hudRef.current) {
           hudRef.current.textContent = `FPS: ${fps.toFixed(1)} | Delta: ${delta.toFixed(1)}ms`;
         }
@@ -207,7 +204,7 @@ export const CanvasVisualizer: React.FC<Props> = ({
       ctx.save();
       ctx.scale(dpr, dpr);
 
-      // 背景クリア（通常: #0A0E1A / クロマキー: #00FF00）
+      // 背景クリア
       ctx.fillStyle = isChromaKeyEnabled ? '#00FF00' : '#0A0E1A';
       ctx.fillRect(0, 0, width, height);
 
@@ -259,7 +256,7 @@ export const CanvasVisualizer: React.FC<Props> = ({
         ctx.stroke();
       }
 
-      // 4. 判定ライン  ← ★ このブロックを丸ごと切り取り（削除）
+      // 3. 判定ライン
       if (!isChromaKeyEnabled) {
         ctx.fillStyle = 'rgba(126, 202, 220, 0.35)';
         ctx.fillRect(0, judgeLineY - 2, width, 6);
@@ -267,7 +264,7 @@ export const CanvasVisualizer: React.FC<Props> = ({
       ctx.fillStyle = isChromaKeyEnabled ? '#101F33' : 'rgba(255, 255, 255, 0.85)';
       ctx.fillRect(0, judgeLineY, width, 3.0);
 
-      // 3. ノーツ描画 (音ゲー風ネオン発光 ＋ インパクト演出)
+      // 4. ノーツ描画
       const topMs = currentMs - (height - judgeLineY) / speed - 50;
       const bottomMs = currentMs + judgeLineY / speed + 50;
 
@@ -275,16 +272,21 @@ export const CanvasVisualizer: React.FC<Props> = ({
         const lane = lanes[i];
         if (lane.totalNoteCount === 0) continue;
 
-        // この親レーンに属する全チャンネルの音域（minPitch, maxPitch）を統合算出
+        // この親レーンに属する全サブトラックの音域（minPitch, maxPitch）を統合算出
         let minP = 127;
         let maxP = 0;
         let hasNotes = false;
 
         for (const st of lane.subTracks) {
-          const cache = song.channelCaches[st.channel];
-          if (cache && cache.noteCount > 0) {
-            minP = Math.min(minP, cache.minPitch);
-            maxP = Math.max(maxP, cache.maxPitch);
+          const track = song.tracks?.find(t => t.trackIndex === st.trackIndex);
+          const notes = track ? track.notes : (song.channelCaches[st.channel]?.notes ?? []);
+          const targetNotes = (typeof st.channel === 'number' && st.channel >= 0)
+            ? notes.filter(n => n.channel === st.channel)
+            : notes;
+
+          for (const n of targetNotes) {
+            minP = Math.min(minP, n.pitch);
+            maxP = Math.max(maxP, n.pitch);
             hasNotes = true;
           }
         }
@@ -302,30 +304,37 @@ export const CanvasVisualizer: React.FC<Props> = ({
           const effectiveTopMs = topMs - offsetMs;
           const effectiveBottomMs = bottomMs - offsetMs;
 
-          // ★ 修正: trackIndex を優先し、該当トラックのノーツ「のみ」を厳密に取得
+          // 該当トラックから、このサブトラックに割り当てられた「元Ch」のみを抽出
           let allNotes: MidiNote[] = [];
           if (typeof st.trackIndex === 'number' && song.tracks) {
             const targetTrack = song.tracks.find(t => t.trackIndex === st.trackIndex);
             if (targetTrack) {
-              allNotes = targetTrack.notes;
+              allNotes = (typeof st.channel === 'number' && st.channel >= 0)
+                ? targetTrack.notes.filter(n => n.channel === st.channel)
+                : targetTrack.notes;
             }
-          }
-
-          // トラックが見つからない旧フォーマット（Format 0）の場合のみチャンネルキャッシュを参照
-          if (allNotes.length === 0 && (!song.tracks || song.tracks.length <= 1)) {
+          } else {
             const cache = song.channelCaches[st.channel];
             if (cache) allNotes = cache.notes;
           }
 
           if (allNotes.length === 0) continue;
 
-          // 表示範囲内のノーツをフィルタリング
           const visibleNotes = allNotes.filter(
             n => n.endTimeMs >= effectiveTopMs && n.startTimeMs <= effectiveBottomMs
           );
           const hitLuminescentColor = getHitLuminescentColor(st.color);
 
           for (const note of visibleNotes) {
+            // ★ チャンネル別カラーが設定されていればそれを優先、なければ基本色またはデフォルト色
+            const noteColor = (st.channelColors && st.channelColors[note.channel])
+              ? st.channelColors[note.channel]
+              : (st.channel === -1 || st.channel === undefined)
+                ? DEFAULT_CHANNEL_COLORS[note.channel % 16]
+                : st.color;
+
+            const hitLuminescentColor = getHitLuminescentColor(noteColor);
+
             const noteStartWithOffset = note.startTimeMs + offsetMs;
             const noteEndWithOffset = note.endTimeMs + offsetMs;
 
@@ -338,31 +347,26 @@ export const CanvasVisualizer: React.FC<Props> = ({
 
             const isHit = currentMs >= noteStartWithOffset && currentMs <= noteEndWithOffset;
 
-            // ヒット時は横幅を広げてインパクトを表現（+2px）
             const currentWidth = isHit ? baseNoteWidth + 2 : baseNoteWidth;
             const x = Math.round(laneX + innerX - currentWidth / 2);
 
             // 音ゲー風ネオングロー
             if (isHit && !isChromaKeyEnabled) {
-              ctx.shadowColor = st.color;
+              ctx.shadowColor = noteColor; // ★ noteColor を使用
               ctx.shadowBlur = 15;
             } else {
               ctx.shadowBlur = 0;
             }
 
-            // ★ プリロール中のノーツは薄くするが、ヒット中（!isHit）のノーツは 100% の輝度で発光させる
-          // ★ 再生開始時点（targetMs）で判定ラインに触れている／跨いでいるノーツかどうか
             const isTouchingAtStart = noteStartWithOffset <= targetMs && noteEndWithOffset >= targetMs;
-
-            // プリロール中のノーツは薄暗くするが、「再生開始時に判定ラインに触れているノーツ」は通常通りの色（透過度1.0）で降らせる
             const isPrerollNote = isPrerolling && (noteStartWithOffset < targetMs) && !isTouchingAtStart;
             ctx.globalAlpha = isPrerollNote ? 0.30 : 1.0;
 
-          // ① ノーツ本体の塗り
-          ctx.fillStyle = isHit ? hitLuminescentColor : st.color;
-          ctx.beginPath();
-          ctx.roundRect(x, yTop, currentWidth, noteHeight, 2.5);
-          ctx.fill();
+            // ① ノーツ本体の塗り（各ノートの色を使用）
+            ctx.fillStyle = isHit ? hitLuminescentColor : noteColor;
+            ctx.beginPath();
+            ctx.roundRect(x, yTop, currentWidth, noteHeight, 2.5);
+            ctx.fill();
 
             // ② 境界線・輪郭
             ctx.strokeStyle = isChromaKeyEnabled
@@ -371,35 +375,28 @@ export const CanvasVisualizer: React.FC<Props> = ({
             ctx.lineWidth = isHit ? 1.5 : 1.2;
             ctx.stroke();
 
-            ctx.globalAlpha = 1.0; // リセット
-
+            ctx.globalAlpha = 1.0;
             ctx.shadowBlur = 0;
           }
         }
       }
 
-      // ★ プリロール中のみ、本編が始まる位置にマーカー線を描画
+      // 5. プリロール中のみ、本編が始まる位置にマーカー線を描画
       if (isPrerolling && targetMs > currentMs) {
         const targetY = Math.round(judgeLineY - (targetMs - currentMs) * speed);
         if (targetY >= 0 && targetY <= height) {
           ctx.save();
           ctx.strokeStyle = '#A4D3FF';
           ctx.lineWidth = 2;
-          ctx.setLineDash([6, 4]); // 破線
+          ctx.setLineDash([6, 4]);
           ctx.beginPath();
           ctx.moveTo(0, targetY);
           ctx.lineTo(width, targetY);
           ctx.stroke();
-
-          // 右端に「START」と小さくラベル表示
-          ctx.fillStyle = '#A4D3FF';
-          ctx.font = 'bold 10px monospace';
-          //ctx.fillText('PLAYBACK START', width - 110, targetY - 5);
           ctx.restore();
         }
       }
 
-      
       ctx.restore();
       animId = requestAnimationFrame(render);
     };
@@ -453,7 +450,7 @@ export const CanvasVisualizer: React.FC<Props> = ({
                 {lane.title}
               </div>
 
-              {/* レーン下部のカスタムカラーライン */}
+              {/* レーン下部のカスタムカラーライン（複数Chの場合は全色をグラデーション表示） */}
               <div
                 style={{
                   position: 'absolute',
@@ -461,7 +458,10 @@ export const CanvasVisualizer: React.FC<Props> = ({
                   left: 0,
                   right: 0,
                   height: 3,
-                  background: lane.color
+                  background:
+                    lane.subTracks.length > 1
+                      ? `linear-gradient(to right, ${lane.subTracks.map(st => st.color).join(', ')})`
+                      : lane.color
                 }}
               />
             </div>
@@ -485,7 +485,7 @@ export const CanvasVisualizer: React.FC<Props> = ({
 
         {showDebugHUD && (
           <div
-            ref={hudRef} // ★ ref をバインド
+            ref={hudRef}
             style={{
               position: 'absolute',
               bottom: 12,

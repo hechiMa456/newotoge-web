@@ -406,7 +406,7 @@ export class MidiParser {
         isEnabled: true,
         trackIndex: tr.trackIndex,
         selectedChannel: primaryCh,
-        outputChannel: primaryCh,
+        outputChannel: -1,
         assignedPreset: INSTRUMENT_PRESETS[0], // None
         latencyOffsetMs: 0.0,
         customColor: DEFAULT_CHANNEL_COLORS[idx % 16]

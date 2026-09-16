@@ -85,6 +85,9 @@ export function App() {
   const [testPitch, setTestPitch] = useState(60);
   const [activeColorPickerSlotId, setActiveColorPickerSlotId] = useState<string | null>(null);
 
+  // Ch別カラー設定メニューを開いているスロットのID
+  const [activeChannelMenuSlotId, setActiveChannelMenuSlotId] = useState<string | null>(null);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as Node;
@@ -500,54 +503,8 @@ export function App() {
     await persistAll(updatedSongs, updatedPresets, nextId);
   };
 
-  // トラック設定の複製ハンドラ
-  const handleDuplicateSlot = async (track: MidiTrackInfo, sourceSlot: LaneSlot) => {
-    if (!currentSong) return;
 
-    const currentSlots = [...currentSong.slots];
-    const sourceExists = currentSlots.some(s => s.id === sourceSlot.id);
-
-    // 元スロットが auto_X の仮想スロットだった場合、元スロットも正式登録
-    if (!sourceExists) {
-      currentSlots.push({ ...sourceSlot });
-    }
-
-    // トラック内のユニークな元チャンネル一覧を取得
-    const channelsInTrack = Array.from(new Set(track.notes.map(n => n.channel))).sort((a, b) => a - b);
-    const usedChannels = currentSlots
-      .filter(s => s.trackIndex === track.trackIndex)
-      .map(s => s.selectedChannel);
-    // まだ使われていない元Chがあれば自動選択、なければ元と同じ
-    const nextChannel = channelsInTrack.find(ch => !usedChannels.includes(ch)) ?? sourceSlot.selectedChannel;
-
-    const newSlot: LaneSlot = {
-      ...sourceSlot,
-      id: crypto.randomUUID(),
-      selectedChannel: nextChannel,
-      outputChannel: nextChannel, // 送信Chも連動して初期設定
-      customColor: DEFAULT_CHANNEL_COLORS[nextChannel % 16]
-    };
-
-    const updatedSlots = [...currentSlots, newSlot];
-    const updatedSong = { ...currentSong, slots: updatedSlots };
-    const updatedSongs = songs.map(s => (s.id === currentSong.id ? updatedSong : s));
-
-    setSongs(updatedSongs);
-    PlaybackEngine.getInstance().updateSlotConfiguration(updatedSong);
-    await persistAll(updatedSongs);
-  };
-
-  // 複製されたスロットの削除ハンドラ
-  const handleDeleteTrackSlot = async (slotId: string) => {
-    if (!currentSong) return;
-    const updatedSlots = currentSong.slots.filter(s => s.id !== slotId);
-    const updatedSong = { ...currentSong, slots: updatedSlots };
-    const updatedSongs = songs.map(s => (s.id === currentSong.id ? updatedSong : s));
-
-    setSongs(updatedSongs);
-    PlaybackEngine.getInstance().updateSlotConfiguration(updatedSong);
-    await persistAll(updatedSongs);
-  };
+  
 
   const handleTransferToMcu = async (track: MidiTrackInfo, slotOutputChannel: number, filterChannel?: number) => {
     if (isTransferring) return;
@@ -1540,7 +1497,6 @@ export function App() {
                     </label>
                     {currentSong.bgmFileName && <span style={{ fontSize: 12, color: '#88D5DA' }}>{currentSong.bgmFileName}</span>}
                   </div>
-
                   {/* トラックカード一覧 */}
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {(() => {
@@ -1548,292 +1504,342 @@ export function App() {
                         ? currentSong.tracks.filter(t => t.notes.length > 0)
                         : [];
 
-                      return tracks.flatMap((track, trackIdx) => {
-                        // このトラックに紐づくスロットをすべて取得
-                        let slotsForTrack = currentSong.slots.filter(s => s.trackIndex === track.trackIndex);
-                        if (slotsForTrack.length === 0) {
-                          slotsForTrack = [{
-                            id: `auto_${track.trackIndex}`,
-                            isEnabled: true,
-                            trackIndex: track.trackIndex,
-                            selectedChannel: track.notes[0]?.channel ?? 0,
-                            outputChannel: track.notes[0]?.channel ?? 0,
-                            assignedPreset: NONE_PRESET,
-                            latencyOffsetMs: 0.0,
-                            customColor: DEFAULT_CHANNEL_COLORS[trackIdx % 16]
-                          }];
-                        }
+                      return tracks.map((track, trackIdx) => {
+                        const slot = currentSong.slots.find(s => s.trackIndex === track.trackIndex) || {
+                          id: `auto_${track.trackIndex}`,
+                          isEnabled: true,
+                          trackIndex: track.trackIndex,
+                          selectedChannel: track.notes[0]?.channel ?? 0,
+                          outputChannel: -1, // デフォルト: 元のCh(維持)
+                          assignedPreset: NONE_PRESET,
+                          latencyOffsetMs: 0.0,
+                          customColor: DEFAULT_CHANNEL_COLORS[trackIdx % 16]
+                        };
 
-                        const channelsInTrack = Array.from(new Set(track.notes.map(n => n.channel))).sort((a, b) => a - b);
-                        const hasMultipleChannels = channelsInTrack.length > 1;
+                        const currentColor = slot.customColor || DEFAULT_CHANNEL_COLORS[trackIdx % 16];
+                        const isColorPickerOpen = activeColorPickerSlotId === slot.id;
 
-                        return slotsForTrack.map((slot, slotSubIdx) => {
-                          const currentColor = slot.customColor || DEFAULT_CHANNEL_COLORS[(trackIdx + slotSubIdx) % 16];
-                          const isColorPickerOpen = activeColorPickerSlotId === slot.id;
+                        return (
+                          <div
+                            key={slot.id}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 10,
+                              padding: '10px 14px',
+                              background: slot.isEnabled ? '#181b2d' : '#141622',
+                              border: '1px solid #30354E',
+                              borderRadius: 6,
+                              position: 'relative',
+                              zIndex: (isColorPickerOpen || activeChannelMenuSlotId === slot.id) ? 100 : 1,
+                              transition: 'background 0.15s'
+                            }}
+                          >
+                            {/* 有効 / 無効 */}
+                            <input
+                              type="checkbox"
+                              checked={slot.isEnabled}
+                              onChange={e => handleUpdateSlot(slot.id, { isEnabled: e.target.checked }, track)}
+                              style={{ width: 16, height: 16, cursor: 'pointer' }}
+                            />
 
-                          // 選択された元Chに該当するノーツ数を取得
-                          const activeNoteCount = (typeof slot.selectedChannel === 'number' && slot.selectedChannel >= 0)
-                            ? track.notes.filter(n => n.channel === slot.selectedChannel).length
-                            : track.notes.length;
+                            {/* トラック名 & ノート数 */}
+                            <div style={{ minWidth: 150, maxWidth: 190, overflow: 'hidden' }}>
+                              <div
+                                title={track.name}
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 'bold',
+                                  color: slot.isEnabled ? '#E2EFFF' : '#6A789A',
+                                  whiteSpace: 'nowrap',
+                                  textOverflow: 'ellipsis',
+                                  overflow: 'hidden'
+                                }}
+                              >
+                                {track.name}
+                              </div>
+                              <div style={{ fontSize: 10, color: '#8FA4C4', marginTop: 2 }}>
+                                {track.notes.length} notes (Ch {(track.notes[0]?.channel ?? 0) + 1})
+                              </div>
+                            </div>
 
-                          return (
-                            <div
-                              key={slot.id}
+                            <span style={{ color: '#6A789A', fontSize: 12 }}>➔</span>
+
+                            {/* 送信先ポート */}
+                            <div style={{ flex: 1, minWidth: 130 }}>
+                              <select
+                                value={
+                                  slot.assignedPreset?.endpointId ??
+                                  (slot.assignedPreset?.instanceIndex
+                                    ? `${slot.assignedPreset.mcuName}#${slot.assignedPreset.instanceIndex}`
+                                    : slot.assignedPreset?.mcuName ?? 'None')
+                                }
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  const target = availableTargets.find(
+                                    t => (t.endpointId ? t.endpointId === val : t.mcuName === val)
+                                  ) ?? NONE_PRESET;
+                                  handleUpdateSlot(slot.id, {
+                                    assignedPreset: target,
+                                    latencyOffsetMs: target.defaultOffsetMs ?? slot.latencyOffsetMs
+                                  }, track);
+                                }}
+                                style={{
+                                  width: '100%',
+                                  background: '#3D4764',
+                                  color: slot.assignedPreset?.id !== 0 ? '#bab0ff' : '#E2EFFF',
+                                  border: '1px solid #4e598c',
+                                  borderRadius: 6,
+                                  padding: '5px 8px',
+                                  fontSize: 12
+                                }}
+                              >
+                                {availableTargets.map(p => {
+                                  const optValue = p.endpointId ?? p.mcuName;
+                                  const statusLabel = p.id !== 0 ? (p.isOnline ? ' [接続中]' : ' [未接続]') : '';
+                                  return (
+                                    <option key={optValue} value={optValue}>
+                                      {p.name}{statusLabel}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                            </div>
+
+                            {/* 送信Ch */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <span style={{ fontSize: 11, color: '#8FA4C4' }}>送信Ch:</span>
+                              <select
+                                value={slot.outputChannel ?? -1}
+                                onChange={e => handleUpdateSlot(slot.id, { outputChannel: Number(e.target.value) }, track)}
+                                style={{
+                                  background: '#3D4764',
+                                  color: '#E2EFFF',
+                                  border: '1px solid #4e598c',
+                                  borderRadius: 6,
+                                  padding: '5px 6px',
+                                  fontSize: 12
+                                }}
+                              >
+                                <option value={-1}>Auto</option>
+                                {Array.from({ length: 16 }, (_, i) => (
+                                  <option key={i} value={i}>
+                                    Ch {i + 1}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            
+
+                            {/* カラーピッカー ＆ Ch別カラーメニュー */}
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 2 }}>
+            {/* トラック全体の基本カラー四角 */}
+            <button
+              type="button"
+              onClick={() => setActiveColorPickerSlotId(isColorPickerOpen ? null : slot.id)}
+              title="トラック基本色を変更"
+              style={{
+                width: 24,
+                height: 24,
+                borderRadius: '6px 0 0 6px',
+                background: currentColor,
+                border: '0px solid #575B77',
+                borderRight: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                outline: 'none'
+              }}
+            />
+
+            {/* ★ Ch別カラー設定ドロップダウンメニューのトリガーボタン */}
+            <button
+              type="button"
+              onClick={() => setActiveChannelMenuSlotId(activeChannelMenuSlotId === slot.id ? null : slot.id)}
+              title="Chごとのカラー設定メニューを開く"
+              style={{
+                width: 18,
+                height: 24,
+                borderRadius: '0 6px 6px 0',
+                background: '#242B42',
+                border: '1px solid #575B77',
+                color: '#A4D3FF',
+                fontSize: 10,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                padding: 0
+              }}
+            >
+              ▼
+            </button>
+
+            {/* 基本カラーピッカー */}
+            {isColorPickerOpen && (
+              <CircularColorPicker
+                color={currentColor}
+                onChange={newColor => handleUpdateSlot(slot.id, { customColor: newColor }, track)}
+                onClose={() => setActiveColorPickerSlotId(null)}
+              />
+            )}
+
+            {/* ★★★ Chごとのノーツカラー設定ドロップダウンメニュー ★★★ */}
+            {activeChannelMenuSlotId === slot.id && (() => {
+              const isAuto = (slot.outputChannel ?? -1) === -1;
+              const channelsInTrack = Array.from(new Set(track.notes.map(n => n.channel))).sort((a, b) => a - b);
+
+              return (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '110%',
+                    left: 0,
+                    width: 260,
+                    background: '#1A1E2E',
+                    border: '1px solid #3E4663',
+                    borderRadius: 8,
+                    padding: '12px 14px',
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+                    zIndex: 80,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 10
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, fontWeight: 'bold', color: '#E2EFFF' }}>
+                      Chごとのノーツカラー設定
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveChannelMenuSlotId(null)}
+                      style={{ background: 'transparent', border: 'none', color: '#8FA4C4', cursor: 'pointer', fontSize: 12 }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {!isAuto ? (
+                    /* Auto 以外の時（単一Ch固定送信時）の案内表示 */
+                    <div style={{ padding: '8px 10px', background: '#25212B', border: '1px solid #4D3B47', borderRadius: 6 }}>
+                      <div style={{ fontSize: 11, fontWeight: 'bold', color: '#FFA07A', marginBottom: 4 }}>
+                        ⚠️ 単一のChを送信する設定になっています
+                      </div>
+                      <div style={{ fontSize: 10, color: '#A09BB0', lineHeight: 1.4 }}>
+                        送信Chを「Auto」に切り替えると、トラックに含まれる複数のChごとに色分けしてビジュアライザーに描画できます。
+                      </div>
+                    </div>
+                  ) : channelsInTrack.length <= 1 ? (
+                    /* Auto だが単一Chしか含まれていない場合 */
+                    <div style={{ fontSize: 11, color: '#8FA4C4', padding: '6px 0' }}>
+                      このトラックには Ch {channelsInTrack[0] !== undefined ? channelsInTrack[0] + 1 : 1} のみ含まれています。
+                    </div>
+                  ) : (
+                    /* Auto かつ複数Chが含まれている場合の色設定パレット */
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ fontSize: 10, color: '#8FA4C4' }}>
+                        各チャンネルのノーツカラーを個別に指定できます：
+                      </div>
+
+                      {channelsInTrack.map(ch => {
+                        const activeColor = slot.channelColors?.[ch] || DEFAULT_CHANNEL_COLORS[ch % 16];
+                        return (
+                          <div
+                            key={ch}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '4px 6px',
+                              background: '#22273D',
+                              borderRadius: 5
+                            }}
+                          >
+                            <span style={{ fontSize: 11, fontWeight: 'bold', color: '#E2EFFF' }}>
+                              Ch {ch + 1}
+                              <span style={{ fontSize: 9, color: '#8FA4C4', marginLeft: 4, fontWeight: 'normal' }}>
+                                ({track.notes.filter(n => n.channel === ch).length} notes)
+                              </span>
+                            </span>
+
+                            {/* カラーピッカー */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <input
+                                type="color"
+                                value={activeColor}
+                                onChange={e => {
+                                  const updatedColors = { ...(slot.channelColors || {}) };
+                                  updatedColors[ch] = e.target.value;
+                                  handleUpdateSlot(slot.id, { channelColors: updatedColors }, track);
+                                }}
+                                style={{
+                                  width: 28,
+                                  height: 22,
+                                  padding: 0,
+                                  border: '1px solid #575B77',
+                                  borderRadius: 4,
+                                  cursor: 'pointer',
+                                  background: 'transparent'
+                                }}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+
+                            {/* 遅延補正スライダー */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                              <input
+                                type="range"
+                                min={-200}
+                                max={200}
+                                step={1}
+                                value={slot.latencyOffsetMs}
+                                onChange={e => handleUpdateSlot(slot.id, { latencyOffsetMs: Number(e.target.value) }, track)}
+                                style={{ width: 65 }}
+                              />
+                              <span style={{ fontSize: 11, minWidth: 38, textAlign: 'right', fontFamily: 'monospace', color: '#8FA4C4' }}>
+                                {slot.latencyOffsetMs}ms
+                              </span>
+                            </div>
+
+                            {/* 転送ボタン */}
+                            <button
+                              type="button"
+                              onClick={() => handleTransferToMcu(track, slot.outputChannel ?? -1)}
+                              disabled={isTransferring}
+                              title="このトラックを有線でマイコン（/StandAlone.bin）に保存します"
                               style={{
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: 10,
-                                padding: '10px 14px',
-                                background: slot.isEnabled ? '#181b2d' : '#141622',
-                                border: '1px solid #30354E',
-                                borderRadius: 6,
-                                position: 'relative',
-                                zIndex: isColorPickerOpen ? 60 : 1,
-                                transition: 'background 0.15s'
+                                gap: 4,
+                                padding: '4px 7px',
+                                background: '#455f84',
+                                border: '1px solid #455f84',
+                                borderRadius: 5,
+                                color: '#E3EFFF',
+                                fontSize: 11,
+                                fontWeight: 'bold',
+                                cursor: isTransferring ? 'not-allowed' : 'pointer',
+                                whiteSpace: 'nowrap'
                               }}
                             >
-                              {/* 有効 / 無効 */}
-                              <input
-                                type="checkbox"
-                                checked={slot.isEnabled}
-                                onChange={e => handleUpdateSlot(slot.id, { isEnabled: e.target.checked }, track)}
-                                style={{ width: 16, height: 16, cursor: 'pointer' }}
-                              />
-
-                              {/* トラック名 & ノート数 */}
-                              <div style={{ minWidth: 150, maxWidth: 190, overflow: 'hidden' }}>
-                                <div
-                                  title={track.name}
-                                  style={{
-                                    fontSize: 13,
-                                    fontWeight: 'bold',
-                                    color: slot.isEnabled ? '#E2EFFF' : '#6A789A',
-                                    whiteSpace: 'nowrap',
-                                    textOverflow: 'ellipsis',
-                                    overflow: 'hidden'
-                                  }}
-                                >
-                                  {track.name} {slotsForTrack.length > 1 ? `(#${slotSubIdx + 1})` : ''}
-                                </div>
-                                <div style={{ fontSize: 10, color: '#8FA4C4', marginTop: 2 }}>
-                                  {activeNoteCount} notes
-                                </div>
-                              </div>
-
-                              {/* 元Ch 選択（複数Ch存在時のみドロップダウン表示） */}
-                              {hasMultipleChannels ? (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                  <span style={{ fontSize: 11, color: '#8FA4C4' }}>元:</span>
-                                  <select
-                                    value={slot.selectedChannel ?? -1}
-                                    onChange={e => handleUpdateSlot(slot.id, { selectedChannel: Number(e.target.value) }, track)}
-                                    style={{
-                                      background: '#3D4764',
-                                      color: '#A4D3FF',
-                                      border: '1px solid #4e598c',
-                                      borderRadius: 5,
-                                      padding: '4px 6px',
-                                      fontSize: 11
-                                    }}
-                                  >
-                                    <option value={-1}>All Ch</option>
-                                    {channelsInTrack.map(ch => (
-                                      <option key={ch} value={ch}>Ch {ch + 1}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                              ) : (
-                                <span style={{ fontSize: 10, color: '#6A789A', minWidth: 42 }}>
-                                  Ch {(track.notes[0]?.channel ?? 0) + 1}
-                                </span>
-                              )}
-
-                              <span style={{ color: '#6A789A', fontSize: 12 }}>➔</span>
-
-                              {/* 送信先ポート */}
-                              <div style={{ flex: 1, minWidth: 130 }}>
-                                <select
-                                  value={
-                                    slot.assignedPreset?.endpointId ??
-                                    (slot.assignedPreset?.instanceIndex
-                                      ? `${slot.assignedPreset.mcuName}#${slot.assignedPreset.instanceIndex}`
-                                      : slot.assignedPreset?.mcuName ?? 'None')
-                                  }
-                                  onChange={e => {
-                                    const val = e.target.value;
-                                    const target = availableTargets.find(
-                                      t => (t.endpointId ? t.endpointId === val : t.mcuName === val)
-                                    ) ?? NONE_PRESET;
-                                    handleUpdateSlot(slot.id, {
-                                      assignedPreset: target,
-                                      latencyOffsetMs: target.defaultOffsetMs ?? slot.latencyOffsetMs
-                                    }, track);
-                                  }}
-                                  style={{
-                                    width: '100%',
-                                    background: '#3D4764',
-                                    color: slot.assignedPreset?.id !== 0 ? '#bab0ff' : '#E2EFFF',
-                                    border: '1px solid #4e598c',
-                                    borderRadius: 6,
-                                    padding: '5px 8px',
-                                    fontSize: 12
-                                  }}
-                                >
-                                  {availableTargets.map(p => {
-                                    const optValue = p.endpointId ?? p.mcuName;
-                                    const statusLabel = p.id !== 0 ? (p.isOnline ? ' [接続中]' : ' [未接続]') : '';
-                                    return (
-                                      <option key={optValue} value={optValue}>
-                                        {p.name}{statusLabel}
-                                      </option>
-                                    );
-                                  })}
-                                </select>
-                              </div>
-
-                              {/* 送信Ch */}
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <span style={{ fontSize: 11, color: '#8FA4C4' }}>送信Ch:</span>
-                                <select
-                                  value={slot.outputChannel ?? (track.notes[0]?.channel ?? 0)}
-                                  onChange={e => handleUpdateSlot(slot.id, { outputChannel: Number(e.target.value) }, track)}
-                                  style={{
-                                    background: '#3D4764',
-                                    color: '#E2EFFF',
-                                    border: '1px solid #4e598c',
-                                    borderRadius: 6,
-                                    padding: '5px 6px',
-                                    fontSize: 12
-                                  }}
-                                >
-                                  {Array.from({ length: 16 }, (_, i) => (
-                                    <option key={i} value={i}>
-                                      Ch {i + 1}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              {/* カラーピッカー */}
-                              <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                                <button
-                                  type="button"
-                                  onClick={() => setActiveColorPickerSlotId(isColorPickerOpen ? null : slot.id)}
-                                  title="ノーツの色を変更"
-                                  style={{
-                                    width: 24,
-                                    height: 24,
-                                    borderRadius: 6,
-                                    background: currentColor,
-                                    border: '2px solid #575B77',
-                                    boxShadow: '0 1px 4px rgba(0,0,0,0.4)',
-                                    cursor: 'pointer',
-                                    padding: 0,
-                                    outline: 'none'
-                                  }}
-                                />
-                                {isColorPickerOpen && (
-                                  <CircularColorPicker
-                                    color={currentColor}
-                                    onChange={newColor => handleUpdateSlot(slot.id, { customColor: newColor }, track)}
-                                    onClose={() => setActiveColorPickerSlotId(null)}
-                                  />
-                                )}
-                              </div>
-
-                              {/* 遅延補正スライダー */}
-                              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                                <input
-                                  type="range"
-                                  min={-200}
-                                  max={200}
-                                  step={1}
-                                  value={slot.latencyOffsetMs}
-                                  onChange={e => handleUpdateSlot(slot.id, { latencyOffsetMs: Number(e.target.value) }, track)}
-                                  style={{ width: 65 }}
-                                />
-                                <span style={{ fontSize: 11, minWidth: 38, textAlign: 'right', fontFamily: 'monospace', color: '#8FA4C4' }}>
-                                  {slot.latencyOffsetMs}ms
-                                </span>
-                              </div>
-
-                              {/* 転送ボタン */}
-                              <button
-                                type="button"
-                                onClick={() => handleTransferToMcu(track, slot.outputChannel ?? (track.notes[0]?.channel ?? 0), slot.selectedChannel)}
-                                disabled={isTransferring}
-                                title="このトラック（または選択元Ch）を有線でマイコン（/StandAlone.bin）に保存します"
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 4,
-                                  padding: '4px 7px',
-                                  background: '#243B54',
-                                  border: '1px solid #36485E',
-                                  borderRadius: 5,
-                                  color: '#A4D3FF',
-                                  fontSize: 11,
-                                  fontWeight: 'bold',
-                                  cursor: isTransferring ? 'not-allowed' : 'pointer',
-                                  whiteSpace: 'nowrap'
-                                }}
-                              >
-                              
-                                <span>転送</span>
-                              </button>
-
-                              {/* ★★★ 複製ボタン ★★★ */}
-                              <button
-                                type="button"
-                                onClick={() => handleDuplicateSlot(track, slot)}
-                                title="このトラック設定を複製して別の楽器やチャンネルへ割り当てます"
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: 4,
-                                  padding: '4px 7px',
-                                  background: '#506e98',
-                                  border: '1px solid #506e98',
-                                  borderRadius: 5,
-                                  color: '#E3EFFF',
-                                  fontSize: 11,
-                                  fontWeight: 'bold',
-                                  cursor: 'pointer',
-                                  whiteSpace: 'nowrap'
-                                }}
-                                onMouseEnter={e => (e.currentTarget.style.background = '#506e98')}
-                                onMouseLeave={e => (e.currentTarget.style.background = '#506e98')}
-                              >
-                                
-                                <span>複製</span>
-                              </button>
-
-                              {/* 複製スロット削除ボタン（複数存在時のみ表示） */}
-                              {slotsForTrack.length > 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteTrackSlot(slot.id)}
-                                  title="このスロットを削除"
-                                  style={{
-                                    background: 'transparent',
-                                    border: 'none',
-                                    color: '#6A789A',
-                                    cursor: 'pointer',
-                                    fontSize: 13,
-                                    padding: '2px 4px'
-                                  }}
-                                  onMouseEnter={e => (e.currentTarget.style.color = '#FF5555')}
-                                  onMouseLeave={e => (e.currentTarget.style.color = '#6A789A')}
-                                >
-                                  ✕
-                                </button>
-                              )}
-                            </div>
-                          );
-                        });
+                              <span>転送</span>
+                            </button>
+                          </div>
+                        );
                       });
                     })()}
                   </div>
+
+                  
                 </div>
               ) : (
                 <div style={{ color: '#8FA4C4', textAlign: 'center', marginTop: 40 }}>

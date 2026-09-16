@@ -378,19 +378,24 @@ export class PlaybackEngine {
       // 送信チャンネル (outputChannel が未設定なら selectedChannel)
       const sendChannel = slot.outputChannel ?? slot.selectedChannel;
 
+      // スロットに紐づくノートをスケジュールに追加
       for (const note of notesToSchedule) {
-        const onMs = note.startTimeMs + offset;
-        const offMs = note.endTimeMs + offset;
-        if (offMs > fromMs) {
-          items.push({
-            pitch: note.pitch,
-            velocity: note.velocity,
-            channel: sendChannel,
-            endpointId: matchedEp?.id,
-            adjustedOnTimeMs: onMs,
-            adjustedOffTimeMs: offMs
-          });
-        }
+        // 送信Chが 0〜15 指定ならそのチャンネル、-1（元のCh維持）ならノート固有の channel
+        const targetChannel = (typeof slot.outputChannel === 'number' && slot.outputChannel >= 0)
+          ? (slot.outputChannel & 0x0f)
+          : (note.channel & 0x0f);
+
+        const adjustedOn = note.startTimeMs + slot.latencyOffsetMs;
+        const adjustedOff = note.endTimeMs + slot.latencyOffsetMs;
+
+        items.push({
+          adjustedOnTimeMs: adjustedOn,
+          adjustedOffTimeMs: adjustedOff,
+          channel: targetChannel,
+          endpointId: slot.assignedPreset?.endpointId, // ★ ここを書き換え
+          pitch: note.pitch,
+          velocity: note.velocity || 100
+        });
       }
     }
 
