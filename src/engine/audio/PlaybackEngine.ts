@@ -236,7 +236,7 @@ export class PlaybackEngine {
     this.isPlayingState = true;
 
     // MIDIノートは targetMs 以降のみをスケジュール（プリロール中は発音しない）
-    this.rebuildSchedule(targetMs);
+    this.rebuildSchedule(this.startOffsetPositionMs);
 
     // ビート（メトロノーム）は preroll 開始位置から設定
     this.setupBeatSchedule(this.startOffsetPositionMs);
@@ -396,6 +396,8 @@ export class PlaybackEngine {
 
     items.sort((a, b) => a.adjustedOnTimeMs - b.adjustedOnTimeMs);
     this.scheduledNotes = items;
+    
+    // ★ 助走開始時刻 (fromMs) 以降にあるノートを正しく開始インデックスにする
     this.nextNoteIdx = items.findIndex(n => n.adjustedOnTimeMs >= fromMs);
     if (this.nextNoteIdx === -1) this.nextNoteIdx = items.length;
   }
@@ -428,10 +430,13 @@ export class PlaybackEngine {
     }
 
     // ★ 2. Note On 送信（プリロール目標位置に到達している場合のみ）
-    // ★ 修正: プリロール目標位置の「手前（最大遅延補正 200ms 分）」から先行 Note On の送信を許可
-    // これにより、0ms冒頭のノートに対して -50ms や -100ms の先行発火が正常にマイコンへ届きます
-    const ALLOW_PRE_SEND_MS = 250; // 最大レイテンシー補正マージン
-    if (curMs >= (this.prerollTargetMs - ALLOW_PRE_SEND_MS)) {
+    // ★ 修正: オフセット再生中は、助走開始位置以降のNoteOn送信を許可する
+    // (prerollTargetMs で一律遮断せず、助走期間内の先行打鍵をマイコンへ流す)
+    const canSendNoteOn = this.isCountInEnabled 
+      ? curMs >= this.startOffsetPositionMs 
+      : curMs >= this.prerollTargetMs;
+
+    if (canSendNoteOn) {
       while (
         this.nextNoteIdx < this.scheduledNotes.length &&
         this.scheduledNotes[this.nextNoteIdx].adjustedOnTimeMs <= curMs
@@ -440,7 +445,7 @@ export class PlaybackEngine {
         if (item.endpointId && epMap.has(item.endpointId)) {
           const ep = epMap.get(item.endpointId)!;
 
-          // 同一ピッチの先行NoteOff
+          // 同一ピッチ先行NoteOff
           const existingIdx = this.activeNotes.findIndex(
             an => an.endpointId === item.endpointId && an.channel === item.channel && an.pitch === item.pitch
           );
