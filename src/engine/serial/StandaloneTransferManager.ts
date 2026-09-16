@@ -102,46 +102,51 @@ export class StandaloneTransferManager {
       reader = port.readable.getReader();
       writer = port.writable.getWriter();
 
-      // ★ 追加: reader / writer の null チェックガード（TypeScriptエラー解消）
+      // ★ reader / writer の null チェックと安全な参照スコープの確保
       if (!reader || !writer) {
         throw new Error('シリアルポートのストリーム取得に失敗しました。');
       }
 
-      // ACK待機用ヘルパー
-      const waitAck = async (expected = 0x9E, timeoutMs = 4000): Promise<void> => {
-        const startTime = Date.now();
-        while (Date.now() - startTime < timeoutMs) {
-          const readPromise = reader!.read();
-          const timerPromise = new Promise<{ value: undefined; done: boolean }>(resolve =>
-            setTimeout(() => resolve({ value: undefined, done: false }), 50)
-          );
+      const currentReader = reader;
+      const currentWriter = writer;
 
-          const res = await Promise.race([readPromise, timerPromise]);
-          if (res.value && res.value.length > 0) {
-            for (let i = 0; i < res.value.length; i++) {
-              if (res.value[i] === expected) return;
+      // ★ 修正版 waitAck: 単一の readLoop を Promise.race でタイムアウト監視
+      const waitAck = async (expected = 0x9E, timeoutMs = 6000): Promise<void> => {
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('マイコンからのACK応答（0x9E）がタイムアウトしました。')), timeoutMs)
+        );
+
+        const readLoop = async (): Promise<void> => {
+          while (true) {
+            const { value, done } = await currentReader.read();
+            if (done) throw new Error('シリアルポートが切断されました。');
+            if (value && value.length > 0) {
+              for (let i = 0; i < value.length; i++) {
+                if (value[i] === expected) return;
+              }
             }
           }
-        }
-        throw new Error('マイコンからのACK応答（0x9E）がタイムアウトしました。');
+        };
+
+        await Promise.race([readLoop(), timeoutPromise]);
       };
 
       // 1. 開始合図 (0x9E)
       onProgress?.({ sent: 0, total: totalEvents, percentage: 0, message: '転送セッションを開始中...' });
-      await writer.write(new Uint8Array([0x9E]));
+      await currentWriter.write(new Uint8Array([0x9E]));
       await waitAck(0x9E, 3000);
 
       // 2. 総イベント数送信 (2バイト)
       const countHigh = (totalEvents >> 8) & 0xFF;
       const countLow = totalEvents & 0xFF;
-      await writer.write(new Uint8Array([countHigh, countLow]));
+      await currentWriter.write(new Uint8Array([countHigh, countLow]));
       await waitAck(0x9E, 3000);
 
-      // 3. ノートパケット送信 (200ノーツ = 1000バイトずつチャンク送信)
-      const CHUNK_SIZE = 200 * 5;
+      // 3. ノートパケット送信（バッファ溢れ防止のため 20ノーツ = 100B 単位で送信）
+      const CHUNK_SIZE = 20 * 5;
       for (let i = 0; i < data.length; i += CHUNK_SIZE) {
         const chunk = data.subarray(i, Math.min(data.length, i + CHUNK_SIZE));
-        await writer.write(chunk);
+        await currentWriter.write(chunk);
 
         const currentSent = Math.min(totalEvents, Math.floor((i + chunk.length) / 5));
         const pct = Math.round((currentSent / totalEvents) * 100);
@@ -152,13 +157,13 @@ export class StandaloneTransferManager {
           message: `ノーツ転送中 (${currentSent} / ${totalEvents})`
         });
 
-        // バッファオーバーフロー防止用の微小ウェイト
-        await new Promise(r => setTimeout(r, 15));
+        // マイコンのフラッシュ書き込み猶予として 10ms 待機
+        await new Promise(r => setTimeout(r, 10));
       }
 
-      // 4. LittleFS 保存完了待機 (5秒タイムアウト)
+      // 4. LittleFS 保存完了待機 (最長10秒)
       onProgress?.({ sent: totalEvents, total: totalEvents, percentage: 100, message: 'マイコンのフラッシュメモリに書き込み中...' });
-      await waitAck(0x9E, 6000);
+      await waitAck(0x9E, 10000);
 
       return { success: true };
     } catch (err: any) {
@@ -167,7 +172,6 @@ export class StandaloneTransferManager {
       }
       return { success: false, error: err.message || '転送中にエラーが発生しました。' };
     } finally {
-      // ポート・ストリームの安全な解放
       try {
         if (reader) {
           await reader.cancel().catch(() => {});

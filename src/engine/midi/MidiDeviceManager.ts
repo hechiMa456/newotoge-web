@@ -301,6 +301,9 @@ export class MidiDeviceManager {
     this.listeners.forEach(cb => cb([...this.endpoints]));
   }
 
+  // クラスのプロパティに追加
+  private bleWriteQueue: Promise<void> = Promise.resolve();
+
   public sendBytes(endpoint: UnifiedMidiEndpoint, bytes: number[]): void {
     if (endpoint.transport === 'web-midi' && endpoint.rawOutputPort) {
       try {
@@ -312,7 +315,11 @@ export class MidiDeviceManager {
       const header = 0x80;
       const timestamp = 0x80;
       const packet = new Uint8Array([header, timestamp, ...bytes]);
-      endpoint.bleCharacteristic.writeValueWithoutResponse(packet).catch(() => {});
+
+      // ★ 送信Promiseをキューで数珠つなぎにし、GATT競合を完全に防止
+      this.bleWriteQueue = this.bleWriteQueue
+        .then(() => endpoint.bleCharacteristic!.writeValueWithoutResponse(packet))
+        .catch(() => {});
     }
   }
 

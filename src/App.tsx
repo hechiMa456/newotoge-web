@@ -104,6 +104,35 @@ export function App() {
     };
   }, []);
 
+  // スペースキーで DAW 風に Play/Pause をトグル
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // スペースキー以外は処理しない
+      if (e.code !== 'Space') return;
+
+      // input, textarea, select 等で入力操作中の場合は文字入力を優先
+      const activeEl = document.activeElement;
+      const isInputActive =
+        activeEl instanceof HTMLInputElement ||
+        activeEl instanceof HTMLTextAreaElement ||
+        activeEl instanceof HTMLSelectElement ||
+        activeEl?.getAttribute('contenteditable') === 'true';
+
+      if (isInputActive) return;
+
+      // ブラウザ標準の「フォーカス中ボタンのクリック」や「画面スクロール」を抑止
+      e.preventDefault();
+
+      // 再生 / 一時停止を切り替え
+      PlaybackEngine.getInstance().togglePlayPause();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   const handleStartResize = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsResizingSidebar(true);
