@@ -1587,7 +1587,7 @@ export function App() {
                                 style={{
                                   width: '100%',
                                   background: '#3D4764',
-                                  color: slot.assignedPreset?.id !== 0 ? '#bab0ff' : '#E2EFFF',
+                                  color: slot.assignedPreset?.id !== 0 ? '#E2EFFF' : '#E2EFFF',
                                   border: '1px solid #4e598c',
                                   borderRadius: 6,
                                   padding: '5px 8px',
@@ -1697,7 +1697,7 @@ export function App() {
                     left: 0,
                     width: 260,
                     background: '#1A1E2E',
-                    border: '1px solid #3E4663',
+                    border: '1px solid #DCB28A',
                     borderRadius: 8,
                     padding: '12px 14px',
                     boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
