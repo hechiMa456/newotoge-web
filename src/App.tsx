@@ -1367,7 +1367,7 @@ export function App() {
               {endpoints.map(ep => (
                 <div
                   key={ep.id}
-                  onClick={() => setSelectedEndpointId(ep.id)}
+                  onClick={() => setSelectedEndpointId(prev => prev === ep.id ? null : ep.id)}
                   style={{
                     fontSize: 12,
                     padding: '8px',
@@ -1411,38 +1411,42 @@ export function App() {
                       ))}
                     </select>
                   </div>
+
+                  {ep.id === selectedEndpointId && (
+                    <div 
+                      onClick={e => e.stopPropagation()}
+                      style={{ marginTop: 10, padding: 8, background: '#1A1A24', borderRadius: 4 }}
+                    >
+                      <div style={{ fontSize: 11, color: '#8FA4C4', marginBottom: 6 }}>
+                        単音テスト [{ep.name} → {ep.identifiedPreset?.name ?? '未割当'}]
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <input
+                          type="number"
+                          min={0}
+                          max={127}
+                          value={testPitch}
+                          onChange={e => setTestPitch(Number(e.target.value))}
+                          style={{ width: 45, background: '#243B54', color: '#E2EFFF', border: '1px solid #243B54', borderRadius: 3, fontSize: 11, padding: 2 }}
+                        />
+                        <button
+                          onClick={() => MidiDeviceManager.getInstance().testSingleNote(ep, 0, testPitch)}
+                          style={{ fontSize: 11, background: '#5D7FAF', border: 'none', padding: '1px 8px', borderRadius: 3, cursor: 'pointer', fontWeight: 'bold', color: '#E2EFFF' }}
+                        >
+                          送信
+                        </button>
+                        <button
+                          onClick={() => MidiDeviceManager.getInstance().sendAllNotesOff(ep, 0)}
+                          style={{ fontSize: 11, background: '#7a4699', color: '#E2EFFF', border: 'none', padding: '3px 6px', borderRadius: 3, cursor: 'pointer' }}
+                        >
+                          OFF
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
 
-              {currentEndpoint && (
-                <div style={{ marginTop: 10, padding: 8, background: '#1A1A24', borderRadius: 4 }}>
-                  <div style={{ fontSize: 11, color: '#8FA4C4', marginBottom: 6 }}>
-                    単音テスト [{currentEndpoint.name} → {currentEndpoint.identifiedPreset?.name ?? '未割当'}]
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <input
-                      type="number"
-                      min={0}
-                      max={127}
-                      value={testPitch}
-                      onChange={e => setTestPitch(Number(e.target.value))}
-                      style={{ width: 45, background: '#243B54', color: '#E2EFFF', border: '1px solid #243B54', borderRadius: 3, fontSize: 11, padding: 2 }}
-                    />
-                    <button
-                      onClick={() => MidiDeviceManager.getInstance().testSingleNote(currentEndpoint, 0, testPitch)}
-                      style={{ fontSize: 11, background: '#5D7FAF', border: 'none', padding: '1px 8px', borderRadius: 3, cursor: 'pointer', fontWeight: 'bold', color: '#E2EFFF' }}
-                    >
-                      送信
-                    </button>
-                    <button
-                      onClick={() => MidiDeviceManager.getInstance().sendAllNotesOff(currentEndpoint, 0)}
-                      style={{ fontSize: 11, background: '#7a4699', color: '#E2EFFF', border: 'none', padding: '3px 6px', borderRadius: 3, cursor: 'pointer' }}
-                    >
-                      OFF
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         )}
