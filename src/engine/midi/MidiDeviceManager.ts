@@ -321,6 +321,67 @@ export class MidiDeviceManager {
 
   // クラスのプロパティに追加
   private bleWriteQueue: Promise<void> = Promise.resolve();
+  private bleMessageQueue: Map<string, number[][]> = new Map();
+  private bleFlushTimer: number | null = null;
+
+  private flushBleQueue(): void {
+    this.bleFlushTimer = null;
+    
+    for (const [endpointId, messages] of this.bleMessageQueue.entries()) {
+      if (messages.length === 0) continue;
+      
+      const endpoint = this.endpoints.find(e => e.id === endpointId);
+      if (!endpoint || !endpoint.bleCharacteristic) continue;
+      
+      const MAX_PAYLOAD = 64;
+      let currentPacket: number[] = [0x80, 0x80]; // Header, Timestamp
+      let currentStatus: number | null = null;
+      
+      const sendCurrentPacket = () => {
+        if (currentPacket.length > 2) {
+          const packetBytes = new Uint8Array(currentPacket);
+          this.bleWriteQueue = this.bleWriteQueue
+            .then(() => endpoint.bleCharacteristic!.writeValueWithoutResponse(packetBytes))
+            .catch(() => {});
+        }
+      };
+
+      for (let i = 0; i < messages.length; i++) {
+        let msg = messages[i];
+        if (msg.length === 0) continue;
+        
+        let status = msg[0];
+        let dataBytes = msg.slice(1);
+        
+        // Note Off to Note On Vel=0 optimization
+        if ((status & 0xF0) === 0x80) {
+          status = 0x90 | (status & 0x0F);
+          if (dataBytes.length === 2) {
+            dataBytes[1] = 0; // Set velocity to 0
+          }
+        }
+        
+        const isSameStatus = (status === currentStatus);
+        const addedBytesLength = isSameStatus ? dataBytes.length : (1 + dataBytes.length);
+        
+        if (currentPacket.length + addedBytesLength > MAX_PAYLOAD) {
+          sendCurrentPacket();
+          currentPacket = [0x80, 0x80];
+          currentStatus = null;
+        }
+        
+        if (status !== currentStatus) {
+          currentPacket.push(status);
+          currentStatus = status;
+        }
+        currentPacket.push(...dataBytes);
+      }
+      
+      sendCurrentPacket();
+    }
+    
+    this.bleMessageQueue.clear();
+  }
 
   public sendBytes(endpoint: UnifiedMidiEndpoint, bytes: number[]): void {
     if (endpoint.transport === 'web-midi' && endpoint.rawOutputPort) {
@@ -330,14 +391,17 @@ export class MidiDeviceManager {
         /* 送信エラー抑制 */
       }
     } else if (endpoint.transport === 'ble-gatt' && endpoint.bleCharacteristic) {
-      const header = 0x80;
-      const timestamp = 0x80;
-      const packet = new Uint8Array([header, timestamp, ...bytes]);
-
-      // ★ 送信Promiseをキューで数珠つなぎにし、GATT競合を完全に防止
-      this.bleWriteQueue = this.bleWriteQueue
-        .then(() => endpoint.bleCharacteristic!.writeValueWithoutResponse(packet))
-        .catch(() => {});
+      let queue = this.bleMessageQueue.get(endpoint.id);
+      if (!queue) {
+        queue = [];
+        this.bleMessageQueue.set(endpoint.id, queue);
+      }
+      queue.push(bytes);
+      
+      if (!this.bleFlushTimer) {
+        // バッファリングして数ミリ秒後に一括送信
+        this.bleFlushTimer = window.setTimeout(() => this.flushBleQueue(), 10);
+      }
     }
   }
 
