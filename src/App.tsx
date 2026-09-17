@@ -72,6 +72,7 @@ export function App() {
   // 楽曲リストのドラッグ＆ドロップ並び替え状態
   const [draggedSongIndex, setDraggedSongIndex] = useState<number | null>(null);
   const [dragOverSongIndex, setDragOverSongIndex] = useState<number | null>(null);
+  const [isFileDragOver, setIsFileDragOver] = useState(false);
 
   // ストレージ情報
   const [isStorageMenuOpen, setIsStorageMenuOpen] = useState(false);
@@ -313,8 +314,7 @@ export function App() {
     await storage.saveSongMetadataList(metaList);
   };
 
-  const handleMidiUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const processMidiFiles = async (files: FileList | File[], insertIndex?: number) => {
     if (!files || files.length === 0) return;
 
     const newSongs: MidiSongData[] = [];
@@ -322,13 +322,21 @@ export function App() {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+      if (!file.name.toLowerCase().endsWith('.mid') && !file.name.toLowerCase().endsWith('.midi')) continue;
       const buffer = await file.arrayBuffer();
       const parsed = MidiParser.parse(buffer, file.name);
       await storage.saveBlob(parsed.midiBlobKey, buffer);
       newSongs.push(parsed);
     }
 
-    const updatedSongs = [...songs, ...newSongs];
+    if (newSongs.length === 0) return;
+
+    const updatedSongs = [...songs];
+    if (typeof insertIndex === 'number' && insertIndex >= 0 && insertIndex <= songs.length) {
+      updatedSongs.splice(insertIndex, 0, ...newSongs);
+    } else {
+      updatedSongs.push(...newSongs);
+    }
     setSongs(updatedSongs);
 
     if (!selectedSongId && newSongs.length > 0) {
@@ -338,6 +346,19 @@ export function App() {
     }
 
     await persistAll(updatedSongs);
+  };
+
+  const handleMidiUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      await processMidiFiles(e.target.files);
+      e.target.value = '';
+    }
+  };
+
+  const handleMidiDrop = async (e: React.DragEvent<HTMLDivElement>, insertIndex?: number) => {
+    e.preventDefault();
+    setIsFileDragOver(false);
+    if (e.dataTransfer.files) await processMidiFiles(e.dataTransfer.files, insertIndex);
   };
 
   const handleDeleteSong = async (songToDelete: MidiSongData) => {
@@ -1174,15 +1195,59 @@ export function App() {
             </svg>
 
             {/* 楽曲リスト */}
-            <div style={{ flex: 1, minHeight: 100, padding: 12, overflowY: 'auto' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <div 
+              style={{ flex: 1, minHeight: 100, display: 'flex', flexDirection: 'column', position: 'relative' }}
+              onDragOver={e => {
+                if (e.dataTransfer.types.includes('Files')) {
+                  e.preventDefault();
+                  setIsFileDragOver(true);
+                }
+              }}
+              onDragLeave={e => {
+                if (e.dataTransfer.types.includes('Files')) {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                    setIsFileDragOver(false);
+                  }
+                }
+              }}
+              onDrop={e => {
+                if (e.dataTransfer.types.includes('Files')) {
+                  e.preventDefault();
+                  handleMidiDrop(e);
+                }
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 12px 8px 12px' }}>
                 <span style={{ fontSize: 14, fontWeight: 'bold', color: '#c1cfe3' }}>楽曲リスト ({songs.length})</span>
                 <label style={{ fontSize: 11, background: '#5D7FAF', color: '#E2EFFF', padding: '2px 8px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold' }}>
                   + 追加
                   <input type="file" multiple accept=".mid,.midi" onChange={handleMidiUpload} style={{ display: 'none' }} />
                 </label>
               </div>
-              {songs.map((song, index) => {
+
+              {isFileDragOver && (
+                <div style={{
+                  position: 'absolute',
+                  top: 40,
+                  left: 12,
+                  right: 13,
+                  bottom: 12,
+                  background: 'rgba(78, 167, 230, 0.2)',
+                  border: '1px dashed #4ea7e6',
+                  borderRadius: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  zIndex: 10,
+                  pointerEvents: 'none',
+                  boxSizing: 'border-box'
+                }}>
+                  <span style={{ fontSize: 16, fontWeight: 'bold', color: '#4ea7e6' }}>D&amp;Dで追加</span>
+                </div>
+              )}
+
+              <div style={{ flex: 1, overflowY: 'scroll', padding: '0 3px 12px 12px' }}>
+                {songs.map((song, index) => {
                 const isSelected = song.id === selectedSongId;
                 const isDragging = draggedSongIndex === index;
                 const isDragOver = dragOverSongIndex === index;
@@ -1208,7 +1273,13 @@ export function App() {
                     }}
                     onDrop={e => {
                       e.preventDefault();
-                      handleDropSong(index);
+                      e.stopPropagation();
+                      if (e.dataTransfer.types.includes('Files')) {
+                        handleMidiDrop(e, index);
+                        setDragOverSongIndex(null);
+                      } else {
+                        handleDropSong(index);
+                      }
                     }}
                     onDragEnd={() => {
                       setDraggedSongIndex(null);
@@ -1224,6 +1295,7 @@ export function App() {
                       cursor: isDragging ? 'grabbing' : 'grab',
                       background: isSelected ? 'rgba(78, 167, 230, 0.12)' : '#181822',
                       border: isSelected ? '1px solid #8abfdb' : '1px solid transparent',
+                      boxSizing: 'border-box',
                       opacity: isDragging ? 0.35 : 1.0,
                       boxShadow: isDragOver ? '0 -3px 0 0 #cbd9eb' : 'none',
                       transition: 'opacity 0.15s',
@@ -1269,6 +1341,7 @@ export function App() {
                   </div>
                 );
               })}
+              </div>
             </div>
 
             {/* 上下ドラッグリサイズ用スプリッター境界線 */}

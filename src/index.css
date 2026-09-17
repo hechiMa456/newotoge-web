@@ -7,3 +7,19 @@ html, body, #root {
   background-color: #0A0E1A;
   user-select: none;
 }
+
+/* Custom Scrollbar for better UI and consistent widths */
+::-webkit-scrollbar {
+  width: 12px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(114, 130, 159, 0.4);
+  border-radius: 6px;
+  border: 3px solid #0A0E1A;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(114, 130, 159, 0.6);
+}
